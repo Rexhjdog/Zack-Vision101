@@ -1,21 +1,30 @@
 import sqlite3
-import json
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict
-from models import Product, StockAlert, TrackedProduct
-from config import DATABASE_PATH
+from models import Product, StockAlert, TrackedProduct, UserPreference
+from config import DATABASE_PATH, STOCK_HISTORY_RETENTION_DAYS
+
+logger = logging.getLogger(__name__)
+
 
 class Database:
     def __init__(self, db_path: str = DATABASE_PATH):
         self.db_path = db_path
         self._init_db()
-    
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get a database connection with WAL mode for better concurrency"""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA foreign_keys=ON')
+        return conn
+
     def _init_db(self):
-        """Initialize database tables"""
-        with sqlite3.connect(self.db_path) as conn:
+        """Initialize database tables and indexes"""
+        with self._get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Products table
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS products (
                     id TEXT PRIMARY KEY,
@@ -33,8 +42,7 @@ class Database:
                     last_in_stock TEXT
                 )
             ''')
-            
-            # Stock history table
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS stock_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,8 +53,7 @@ class Database:
                     FOREIGN KEY (product_id) REFERENCES products(id)
                 )
             ''')
-            
-            # Alerts table
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,8 +67,7 @@ class Database:
                     FOREIGN KEY (product_id) REFERENCES products(id)
                 )
             ''')
-            
-            # Tracked products table
+
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS tracked_products (
                     id TEXT PRIMARY KEY,
@@ -73,16 +79,46 @@ class Database:
                     alert_channel_id INTEGER
                 )
             ''')
-            
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id INTEGER PRIMARY KEY,
+                    alerts_enabled INTEGER DEFAULT 1,
+                    updated_at TEXT
+                )
+            ''')
+
+            # Indexes for frequently queried columns
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_stock_history_timestamp
+                ON stock_history(timestamp)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_stock_history_product_id
+                ON stock_history(product_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_alerts_timestamp
+                ON alerts(timestamp)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_alerts_product_type
+                ON alerts(product_id, alert_type)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_products_retailer
+                ON products(retailer)
+            ''')
+
             conn.commit()
-    
+
     def save_product(self, product: Product):
         """Save or update a product"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO products 
-                (id, name, retailer, url, price, currency, in_stock, image_url, 
+                INSERT OR REPLACE INTO products
+                (id, name, retailer, url, price, currency, in_stock, image_url,
                  category, set_name, pack_type, last_checked, last_in_stock)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
@@ -94,37 +130,36 @@ class Database:
                 product.last_in_stock.isoformat() if product.last_in_stock else None
             ))
             conn.commit()
-    
+
     def get_product(self, product_id: str) -> Optional[Product]:
         """Get a product by ID"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM products WHERE id = ?', (product_id,))
             row = cursor.fetchone()
-            
             if row:
                 return self._row_to_product(row)
             return None
-    
+
     def get_all_products(self) -> List[Product]:
         """Get all tracked products"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM products')
             rows = cursor.fetchall()
             return [self._row_to_product(row) for row in rows]
-    
+
     def get_products_by_retailer(self, retailer: str) -> List[Product]:
         """Get products for a specific retailer"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM products WHERE retailer = ?', (retailer,))
             rows = cursor.fetchall()
             return [self._row_to_product(row) for row in rows]
-    
+
     def save_stock_history(self, product: Product):
         """Save stock history entry"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO stock_history (product_id, in_stock, price, timestamp)
@@ -136,13 +171,13 @@ class Database:
                 datetime.now().isoformat()
             ))
             conn.commit()
-    
+
     def save_alert(self, alert: StockAlert):
         """Save an alert"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO alerts 
+                INSERT INTO alerts
                 (product_id, alert_type, timestamp, previous_status, previous_price, message)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (
@@ -154,30 +189,28 @@ class Database:
                 alert.message
             ))
             conn.commit()
-    
+
     def get_recent_alerts(self, hours: int = 24) -> List[Dict]:
         """Get alerts from the last N hours"""
-        # Calculate cutoff time in Python to avoid SQL injection
-        from datetime import timedelta
         cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
-        
-        with sqlite3.connect(self.db_path) as conn:
+
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT a.*, p.name, p.retailer, p.url 
+                SELECT a.*, p.name, p.retailer, p.url
                 FROM alerts a
                 JOIN products p ON a.product_id = p.id
                 WHERE a.timestamp > ?
                 ORDER BY a.timestamp DESC
             ''', (cutoff_time,))
-            
+
             columns = [description[0] for description in cursor.description]
             rows = cursor.fetchall()
             return [dict(zip(columns, row)) for row in rows]
-    
+
     def add_tracked_product(self, tracked: TrackedProduct):
         """Add a user-tracked product"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT OR REPLACE INTO tracked_products
@@ -189,14 +222,14 @@ class Database:
                 int(tracked.enabled), tracked.alert_channel_id
             ))
             conn.commit()
-    
+
     def get_tracked_products(self) -> List[TrackedProduct]:
         """Get all user-tracked products"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM tracked_products WHERE enabled = 1')
             rows = cursor.fetchall()
-            
+
             products = []
             for row in rows:
                 products.append(TrackedProduct(
@@ -209,39 +242,76 @@ class Database:
                     alert_channel_id=row[6]
                 ))
             return products
-    
+
     def remove_tracked_product(self, product_id: str):
         """Remove a tracked product"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM tracked_products WHERE id = ?', (product_id,))
             conn.commit()
-    
+
     def get_last_alert_time(self, product_id: str, alert_type: str = 'in_stock') -> Optional[datetime]:
         """Get the timestamp of the last alert for a product"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT timestamp FROM alerts 
+                SELECT timestamp FROM alerts
                 WHERE product_id = ? AND alert_type = ?
-                ORDER BY timestamp DESC 
+                ORDER BY timestamp DESC
                 LIMIT 1
             ''', (product_id, alert_type))
             row = cursor.fetchone()
             if row and row[0]:
                 return datetime.fromisoformat(row[0])
             return None
-    
+
     def should_send_alert(self, product_id: str, cooldown_seconds: int = 300) -> bool:
         """Check if enough time has passed since the last alert"""
         last_alert = self.get_last_alert_time(product_id)
         if not last_alert:
             return True
-        
-        from datetime import timedelta
         time_since_last = datetime.now() - last_alert
         return time_since_last > timedelta(seconds=cooldown_seconds)
-    
+
+    def set_user_preference(self, user_id: int, alerts_enabled: bool):
+        """Set a user's alert preference"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO user_preferences
+                (user_id, alerts_enabled, updated_at)
+                VALUES (?, ?, ?)
+            ''', (user_id, int(alerts_enabled), datetime.now().isoformat()))
+            conn.commit()
+
+    def get_user_preference(self, user_id: int) -> Optional[UserPreference]:
+        """Get a user's alert preference"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT user_id, alerts_enabled, updated_at FROM user_preferences WHERE user_id = ?',
+                (user_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return UserPreference(
+                    user_id=row[0],
+                    alerts_enabled=bool(row[1]),
+                    updated_at=datetime.fromisoformat(row[2]) if row[2] else None
+                )
+            return None
+
+    def cleanup_old_history(self, retention_days: int = STOCK_HISTORY_RETENTION_DAYS):
+        """Remove stock history older than retention period"""
+        cutoff = (datetime.now() - timedelta(days=retention_days)).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM stock_history WHERE timestamp < ?', (cutoff,))
+            deleted = cursor.rowcount
+            conn.commit()
+            if deleted > 0:
+                logger.info(f"Cleaned up {deleted} old stock history entries")
+
     def _row_to_product(self, row) -> Product:
         """Convert database row to Product object"""
         return Product(

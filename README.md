@@ -1,15 +1,17 @@
 # Pokemon/One Piece TCG Stock Alert Bot
 
-A Discord bot that monitors Melbourne-area retailers for Pokemon and One Piece booster pack stock availability.
+A Discord bot that monitors Melbourne-area retailers for Pokemon and One Piece TCG **booster box** stock availability and sends real-time alerts.
 
 ## Features
 
-- **Real-time Monitoring**: Checks 6 major Melbourne retailers every 2 minutes
-- **Smart Alerts**: Only notifies when items come BACK in stock (no spam)
+- **Real-time Monitoring**: Checks 5 major Melbourne retailers every 2 minutes
+- **Smart Alerts**: Only notifies when items come BACK in stock (5-minute cooldown prevents spam)
 - **Multiple Retailers**: EB Games, JB Hi-Fi, Target, Big W, Kmart
 - **Discord Integration**: Slash commands for easy management
-- **Stock History**: Tracks price changes and availability over time
-- **Booster Pack Focus**: Monitors only packs (no booster boxes)
+- **Stock History**: Tracks price changes and availability over time with automatic cleanup
+- **Booster Box Focus**: Monitors only booster boxes (excludes packs, blisters, etc.)
+- **Concurrent Checking**: All retailers are checked simultaneously for faster results
+- **User Preferences**: Per-user alert toggle persisted to database
 
 ## Quick Start
 
@@ -33,14 +35,14 @@ The setup script will:
 2. Click "New Application" and name it
 3. Go to "Bot" tab and click "Add Bot"
 4. Copy the bot token
-5. Under "OAuth2" → "URL Generator":
-   - Select `bot` scope
+5. Under "OAuth2" > "URL Generator":
+   - Select `bot` and `applications.commands` scopes
    - Select permissions: `Send Messages`, `Embed Links`, `Mention Everyone`, `Use Slash Commands`
    - Copy the generated URL and open it to invite the bot to your server
 
 ### 3. Get Channel ID
 
-1. In Discord, enable Developer Mode (User Settings → Advanced)
+1. In Discord, enable Developer Mode (User Settings > Advanced)
 2. Right-click your alert channel
 3. Click "Copy Channel ID"
 
@@ -58,8 +60,8 @@ python bot.py
 | `/list` | Show all tracked products |
 | `/remove <id>` | Remove a product from tracking |
 | `/status [retailer]` | Check current stock status |
-| `/alerts <on/off>` | Toggle stock alerts |
-| `/search <query>` | Search for products |
+| `/alerts <on/off>` | Toggle stock alerts for your account |
+| `/force_check` | Force immediate stock check (Admin only) |
 | `/help_bot` | Show help information |
 
 ## Monitored Retailers
@@ -75,63 +77,58 @@ python bot.py
 Edit `config.py` to customize:
 
 ```python
-# Check interval (seconds)
-CHECK_INTERVAL = 120  # 2 minutes
-
-# Booster pack keywords
-BOOSTER_KEYWORDS = ['booster pack', 'pack', 'blister', '3-pack', '6-pack']
-
-# High rarity keywords
-HIGH_RARITY_KEYWORDS = ['secret rare', 'alternate art', 'full art']
-
-# Pokemon sets to track
-POKEMON_SETS = ['Paldean Fates', 'Temporal Forces', '151', ...]
-
-# One Piece sets to track
-ONE_PIECE_SETS = ['Romance Dawn', 'Paramount War', ...]
+CHECK_INTERVAL = 120           # Check every 2 minutes
+ALERT_COOLDOWN = 300           # 5 min cooldown between alerts
+MAX_EMBED_FIELDS = 10          # Max products in one embed
+STOCK_HISTORY_RETENTION_DAYS = 30  # Auto-cleanup history
+REQUEST_DELAY_MIN = 3.0        # Rate limiting (min seconds between requests)
+REQUEST_DELAY_MAX = 7.0        # Rate limiting (max seconds between requests)
 ```
 
-## Project Structure
+## Architecture
 
 ```
 Zack-Vision101/
-├── bot.py              # Discord bot with slash commands
-├── scheduler.py        # Stock monitoring scheduler
-├── database.py         # SQLite database operations
-├── config.py           # Configuration settings
-├── models.py           # Data models
-├── scrapers/           # Retailer-specific scrapers
-│   ├── base.py        # Base scraper class
-│   ├── eb_games.py    # EB Games scraper
-│   ├── jb_hifi.py     # JB Hi-Fi scraper
-│   ├── target_au.py   # Target Australia scraper
-│   ├── big_w.py       # Big W scraper
-│   └── kmart.py       # Kmart scraper
+├── bot.py              # Discord bot, slash commands, alert sending
+├── scheduler.py        # Stock monitoring scheduler (concurrent checks)
+├── database.py         # SQLite database with WAL mode and indexes
+├── config.py           # All configuration constants
+├── models.py           # Data models (Product, StockAlert, TrackedProduct, UserPreference)
+├── scrapers/           # Retailer scrapers (selector-based)
+│   ├── base.py        # Base scraper: HTTP, parsing, rate limiting, retry logic
+│   ├── eb_games.py    # EB Games selectors
+│   ├── jb_hifi.py     # JB Hi-Fi selectors
+│   ├── target_au.py   # Target Australia selectors
+│   ├── big_w.py       # Big W selectors
+│   └── kmart.py       # Kmart selectors
 ├── requirements.txt    # Python dependencies
-├── setup.py           # Setup script
+├── setup.py           # Interactive setup script
 ├── .env.example       # Environment file template
 ├── .gitignore         # Git ignore rules
-├── README.md          # This file
 └── LICENSE            # MIT License
 ```
 
+### Key Design Decisions
+
+- **Selector-based scrapers**: Each retailer scraper only defines CSS selectors. All fetch/parse/retry logic lives in `BaseScraper`, eliminating code duplication.
+- **Callback-based alerts**: The scheduler receives an `alert_callback` function instead of importing from `bot.py`, eliminating circular imports.
+- **Deterministic IDs**: Product IDs use `hashlib.md5` (not `hash()`) so they're stable across Python sessions.
+- **WAL mode SQLite**: Uses Write-Ahead Logging for better concurrent read/write performance.
+- **Concurrent retailer checks**: All 5 retailers are checked simultaneously via `asyncio.gather`.
+
 ## How It Works
 
-1. **Scheduler** runs every 2 minutes and checks all enabled retailers
-2. **Scrapers** search for Pokemon and One Piece products on each retailer's website
-3. **Database** tracks stock history to detect changes
-4. **Alerts** are sent when:
-   - An item comes back in stock
-   - Price changes significantly
-5. **Discord bot** provides commands to interact with the system
+1. **Scheduler** runs every 2 minutes and checks all enabled retailers concurrently
+2. **Scrapers** fetch search pages and parse product data using retailer-specific CSS selectors
+3. **Database** tracks stock history to detect changes (with automatic 30-day cleanup)
+4. **Alerts** are sent when an item comes back in stock or its price changes
+5. **Discord bot** provides slash commands to interact with the system
 
-## Database
+## Important Notes
 
-The bot uses SQLite to store:
-- Products (name, URL, price, stock status)
-- Stock history (timestamps of stock changes)
-- Alerts (notification history)
-- User-tracked products (custom URLs to monitor)
+- CSS selectors in each scraper are best-effort placeholders. They need to be verified against the actual retailer HTML and updated accordingly. Many modern retailer sites use JavaScript rendering, which BeautifulSoup cannot handle.
+- The bot respects rate limits with 3-7 second randomized delays between requests and exponential backoff on failures.
+- Stock history older than 30 days is automatically cleaned up.
 
 ## Troubleshooting
 
@@ -143,20 +140,12 @@ The bot uses SQLite to store:
 ### No alerts received
 - Verify bot has correct channel permissions
 - Check that the bot is in your Discord server
-- Look at console output for errors
+- Look at `bot.log` for errors
 
-### Scraper errors
-- Some sites may block bots
-- Check your internet connection
-- Retailers may change their website layout (scrapers may need updating)
-
-## Contributing
-
-Feel free to:
-- Add more retailers
-- Improve scrapers
-- Add new features
-- Report bugs
+### Scraper returns 0 products
+- CSS selectors may not match the retailer's current HTML structure
+- The retailer may use JavaScript rendering (not supported by BeautifulSoup)
+- Check `bot.log` for selector mismatch warnings
 
 ## License
 
@@ -165,13 +154,3 @@ MIT License - See LICENSE file
 ## Disclaimer
 
 This bot is for educational purposes. Always respect retailers' Terms of Service and robots.txt files. Use responsibly and don't overload websites with requests.
-
-## Support
-
-If you have issues:
-1. Check the logs in the console
-2. Verify your Discord bot token and permissions
-3. Make sure the channel ID is correct
-4. Check that all dependencies are installed
-
-Happy hunting for those rare cards! 🎴🏴‍☠️

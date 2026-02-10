@@ -9,6 +9,7 @@ DISCORD_CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID', 0))
 
 # Check Interval (seconds)
 CHECK_INTERVAL = 120  # 2 minutes
+ERROR_RETRY_INTERVAL = 60  # 1 minute after errors
 
 # Booster Box Keywords ONLY - we only track boxes, not packs
 BOOSTER_BOX_KEYWORDS = [
@@ -22,20 +23,11 @@ BOOSTER_BOX_KEYWORDS = [
     'booster case',
 ]
 
-# High Rarity Keywords
-HIGH_RARITY_KEYWORDS = [
-    'secret rare',
-    'alternate art',
-    'alt art',
-    'full art',
-    'rainbow rare',
-    'gold',
-    'hyper rare',
-    'special illustration',
-    'character rare',
-    'parallel',
-    'foil',
-    'holo',
+# Exclude keywords - booster packs and non-TCG items
+EXCLUDE_KEYWORDS = [
+    'booster pack', 'blister', '3-pack', '6-pack', '10-pack',
+    'single pack', 'booster sleeve', 'sleeve', 'binder',
+    'playmat', 'deck box', 'card sleeves', 'elite trainer box',
 ]
 
 # Pokemon Sets to Track (current high-value sets)
@@ -122,11 +114,14 @@ DATABASE_PATH = 'stock_alerts.db'
 
 # Alert Settings
 ALERT_COOLDOWN = 300  # 5 minutes between alerts for same product
-MAX_ALERTS_PER_HOUR = 50  # Rate limiting
+MAX_ALERTS_PER_HOUR = 50
+MAX_EMBED_FIELDS = 10  # Max products shown in a single Discord embed
+STOCK_HISTORY_RETENTION_DAYS = 30  # Auto-cleanup older history
 
 # Rate Limiting Settings
 REQUEST_DELAY_MIN = 3.0  # Minimum seconds between requests to same retailer
 REQUEST_DELAY_MAX = 7.0  # Maximum seconds between requests (randomized)
+REQUEST_TIMEOUT = 30  # HTTP request timeout in seconds
 RETRY_ATTEMPTS = 3  # Number of retry attempts for failed requests
 RETRY_DELAY_BASE = 2  # Base seconds for exponential backoff
 
@@ -146,3 +141,6 @@ ALLOWED_DOMAINS = [
     'bigw.com.au',
     'kmart.com.au',
 ]
+
+# Logging
+LOG_FILE = 'bot.log'

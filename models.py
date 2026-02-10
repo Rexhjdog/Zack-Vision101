@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
+
 
 @dataclass
 class Product:
@@ -18,14 +19,15 @@ class Product:
     pack_type: str = ''  # 'booster', 'blister', 'etb', etc.
     last_checked: Optional[datetime] = None
     last_in_stock: Optional[datetime] = None
-    
+
     def __hash__(self):
         return hash(self.id)
-    
+
     def __eq__(self, other):
         if not isinstance(other, Product):
             return False
         return self.id == other.id
+
 
 @dataclass
 class StockAlert:
@@ -37,6 +39,7 @@ class StockAlert:
     previous_price: Optional[float] = None
     message: Optional[str] = None
 
+
 @dataclass
 class TrackedProduct:
     """Represents a user-tracked product"""
@@ -47,3 +50,11 @@ class TrackedProduct:
     added_at: Optional[datetime] = None
     enabled: bool = True
     alert_channel_id: Optional[int] = None
+
+
+@dataclass
+class UserPreference:
+    """Represents a user's alert preferences"""
+    user_id: int
+    alerts_enabled: bool = True
+    updated_at: Optional[datetime] = None
