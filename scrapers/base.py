@@ -53,20 +53,33 @@ class BaseScraper(ABC):
         except ValueError:
             return None
     
-    def _is_booster_pack(self, name: str) -> bool:
-        """Check if product is a booster pack"""
+    def _is_tcgp_product(self, name: str) -> bool:
+        """Check if product is a booster box ONLY (no packs)"""
         name_lower = name.lower()
-        booster_keywords = [
-            'booster pack', 'booster', 'pack', 'blister', 
-            '3-pack', '6-pack', '10-pack', 'collector'
+        
+        # ONLY include booster boxes - explicitly exclude packs
+        box_keywords = [
+            'booster box', 'booster display', 'display box', 
+            'case', 'carton', '36 pack', '24 pack', 'booster case',
         ]
         
-        # Exclude booster boxes
-        box_keywords = ['booster box', 'display box', 'case', 'carton']
-        if any(keyword in name_lower for keyword in box_keywords):
+        # Exclude booster packs and non-TCG items
+        exclude_keywords = [
+            'booster pack', 'blister', '3-pack', '6-pack', '10-pack', 
+            'single pack', 'booster sleeve', 'sleeve', 'binder', 
+            'playmat', 'deck box', 'card sleeves', 'elite trainer box'
+        ]
+        
+        # First check if it's excluded (packs)
+        if any(keyword in name_lower for keyword in exclude_keywords):
             return False
         
-        return any(keyword in name_lower for keyword in booster_keywords)
+        # Then check if it's a box
+        return any(keyword in name_lower for keyword in box_keywords)
+    
+    def _get_product_type(self, name: str) -> str:
+        """Determine product type - always returns 'box' since we only track boxes"""
+        return 'box'
     
     def _categorize_product(self, name: str) -> str:
         """Categorize as pokemon or one_piece"""

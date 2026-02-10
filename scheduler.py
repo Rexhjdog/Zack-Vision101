@@ -75,11 +75,11 @@ class StockScheduler:
                     continue
                 
                 async with scraper:
-                    # Search for Pokemon products
-                    pokemon_products = await scraper.search_products('pokemon booster pack')
+                    # Search for Pokemon booster boxes ONLY
+                    pokemon_products = await scraper.search_products('pokemon booster box')
                     
-                    # Search for One Piece products
-                    onepiece_products = await scraper.search_products('one piece card game')
+                    # Search for One Piece booster boxes ONLY
+                    onepiece_products = await scraper.search_products('one piece booster box')
                     
                     all_products = pokemon_products + onepiece_products
                     

@@ -26,7 +26,7 @@ class EBGamesScraper(BaseScraper):
                     
                     for item in product_items:
                         product = self._parse_product_item(item)
-                        if product and self._is_booster_pack(product.name):
+                        if product and self._is_tcgp_product(product.name):
                             products.append(product)
         
         except Exception as e:
@@ -81,7 +81,7 @@ class EBGamesScraper(BaseScraper):
                 image_url=image_url,
                 category=self._categorize_product(name),
                 set_name=self._extract_set_name(name),
-                pack_type='booster' if 'booster' in name.lower() else 'pack'
+                pack_type=self._get_product_type(name)
             )
         
         except Exception as e:

@@ -10,18 +10,16 @@ DISCORD_CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID', 0))
 # Check Interval (seconds)
 CHECK_INTERVAL = 120  # 2 minutes
 
-# Booster Pack Keywords (for filtering high-rarity packs)
-BOOSTER_KEYWORDS = [
-    'booster pack',
-    'booster',
-    'pack',
-    'blister',
-    '3-pack',
-    '6-pack',
-    '10-pack',
-    'collector',
-    'elite trainer box',
-    'etb',
+# Booster Box Keywords ONLY - we only track boxes, not packs
+BOOSTER_BOX_KEYWORDS = [
+    'booster box',
+    'booster display',
+    'display box',
+    'case',
+    'carton',
+    '36 pack',
+    '24 pack',
+    'booster case',
 ]
 
 # High Rarity Keywords
@@ -76,8 +74,8 @@ RETAILERS = {
         'name': 'EB Games',
         'base_url': 'https://www.ebgames.com.au',
         'search_urls': [
-            'https://www.ebgames.com.au/search?q=pokemon+booster+pack',
-            'https://www.ebgames.com.au/search?q=one+piece+card+game',
+            'https://www.ebgames.com.au/search?q=pokemon+booster+box',
+            'https://www.ebgames.com.au/search?q=one+piece+booster+box',
         ],
         'enabled': True,
     },
@@ -85,8 +83,8 @@ RETAILERS = {
         'name': 'JB Hi-Fi',
         'base_url': 'https://www.jbhifi.com.au',
         'search_urls': [
-            'https://www.jbhifi.com.au/search?page=1&query=pokemon%20booster%20pack',
-            'https://www.jbhifi.com.au/search?page=1&query=one%20piece%20card%20game',
+            'https://www.jbhifi.com.au/search?page=1&query=pokemon%20booster%20box',
+            'https://www.jbhifi.com.au/search?page=1&query=one%20piece%20booster%20box',
         ],
         'enabled': True,
     },
@@ -94,8 +92,8 @@ RETAILERS = {
         'name': 'Target Australia',
         'base_url': 'https://www.target.com.au',
         'search_urls': [
-            'https://www.target.com.au/search?text=pokemon+booster+pack',
-            'https://www.target.com.au/search?text=one+piece+card+game',
+            'https://www.target.com.au/search?text=pokemon+booster+box',
+            'https://www.target.com.au/search?text=one+piece+booster+box',
         ],
         'enabled': True,
     },
@@ -103,8 +101,8 @@ RETAILERS = {
         'name': 'Big W',
         'base_url': 'https://www.bigw.com.au',
         'search_urls': [
-            'https://www.bigw.com.au/search?q=pokemon+booster+pack',
-            'https://www.bigw.com.au/search?q=one+piece+card+game',
+            'https://www.bigw.com.au/search?q=pokemon+booster+box',
+            'https://www.bigw.com.au/search?q=one+piece+booster+box',
         ],
         'enabled': True,
     },
@@ -112,8 +110,8 @@ RETAILERS = {
         'name': 'Kmart Australia',
         'base_url': 'https://www.kmart.com.au',
         'search_urls': [
-            'https://www.kmart.com.au/search/?q=pokemon+booster+pack',
-            'https://www.kmart.com.au/search/?q=one+piece+card+game',
+            'https://www.kmart.com.au/search/?q=pokemon+booster+box',
+            'https://www.kmart.com.au/search/?q=one+piece+booster+box',
         ],
         'enabled': True,
     },
