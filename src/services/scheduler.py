@@ -17,6 +17,7 @@ from src.scrapers import (
     BigWScraper,
     KmartScraper
 )
+from src.utils.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -81,27 +82,29 @@ class StockScheduler:
     async def start(self):
         """Start the scheduler."""
         self.running = True
+        metrics.gauge('scheduler_running').set(1)
         logger.info("Starting stock monitoring scheduler...")
         await self._check_all_retailers()
         self._monitoring_task = asyncio.create_task(self._monitoring_loop())
         logger.info(f"Scheduler started. Checking every {CHECK_INTERVAL} seconds")
-    
+
     async def stop(self):
         """Stop the scheduler gracefully."""
         self.running = False
+        metrics.gauge('scheduler_running').set(0)
         logger.info("Stopping scheduler...")
-        
+
         if self._monitoring_task and not self._monitoring_task.done():
             self._monitoring_task.cancel()
             try:
                 await self._monitoring_task
             except asyncio.CancelledError:
                 pass
-        
+
         for scraper in self.scrapers.values():
             if scraper.session:
                 await scraper.session.close()
-        
+
         logger.info("Scheduler stopped")
     
     async def _monitoring_loop(self):
@@ -121,8 +124,12 @@ class StockScheduler:
     
     async def _check_all_retailers(self):
         """Check stock for all enabled retailers concurrently."""
+        import time
+        start_time = time.time()
+        
         logger.info(f"Starting stock check at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self._stats.total_checks += 1
+        metrics.counter('stock_checks_total').inc()
         
         all_products: List[Product] = []
         check_tasks = []
@@ -144,11 +151,22 @@ class StockScheduler:
             except Exception as e:
                 logger.error(f"Error checking {retailer_key}: {e}")
                 self._stats.failed_checks += 1
+                metrics.counter('scraper_errors_total').inc()
                 self._stats.add_error(f"{datetime.now()}: {retailer_key} - {str(e)}")
         
         self._stats.products_found = len(all_products)
         self._stats.last_check = datetime.now()
-        logger.info(f"Completed check. Total products: {len(all_products)}")
+        
+        # Record metrics
+        duration = time.time() - start_time
+        metrics.histogram('stock_check_duration_seconds').observe(duration)
+        metrics.gauge('products_tracked').set(len(all_products))
+        
+        # Update in-stock gauge
+        in_stock_count = sum(1 for p in all_products if p.in_stock)
+        metrics.gauge('products_in_stock').set(in_stock_count)
+        
+        logger.info(f"Completed check. Total products: {len(all_products)} ({in_stock_count} in stock)")
         
         # Cleanup old history daily
         if self._stats.total_checks % (24 * 3600 // CHECK_INTERVAL) == 0:
@@ -251,10 +269,21 @@ class StockScheduler:
     
     async def _send_alert(self, alert: StockAlert):
         """Send Discord alert for stock change."""
+        import time
         if self.alert_callback:
             try:
-                await self.alert_callback(alert)
+                start_time = time.time()
+                success = await self.alert_callback(alert)
+                duration = time.time() - start_time
+                
+                metrics.histogram('alert_send_duration_seconds').observe(duration)
+                
+                if success:
+                    metrics.counter('alerts_sent_total').inc()
+                else:
+                    metrics.counter('alerts_failed_total').inc()
             except Exception as e:
+                metrics.counter('alerts_failed_total').inc()
                 logger.error(f"Error sending alert: {e}", exc_info=True)
     
     async def force_check(self) -> List[Product]:

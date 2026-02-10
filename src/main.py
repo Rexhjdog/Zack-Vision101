@@ -11,7 +11,7 @@ import discord
 from discord.ext import commands
 
 from src.config import (
-    DISCORD_TOKEN, DISCORD_CHANNEL_ID, 
+    DISCORD_TOKEN, DISCORD_CHANNEL_ID,
     LOG_LEVEL, LOG_FORMAT, LOG_FILE,
     ALLOWED_DOMAINS
 )
@@ -19,6 +19,8 @@ from src.services.database import Database
 from src.services.scheduler import StockScheduler
 from src.models.product import StockAlert, TrackedProduct
 from src.utils.health import HealthChecker
+from src.utils.validation import validate_config
+from src.utils.metrics import metrics
 
 # Setup logging
 logging.basicConfig(
@@ -363,9 +365,63 @@ async def health_cmd(interaction: discord.Interaction):
             )
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        
+
     except Exception as e:
         logger.error(f"Error in health command: {e}", exc_info=True)
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@bot.tree.command(name='metrics', description='Show bot metrics (Prometheus format)')
+async def metrics_cmd(interaction: discord.Interaction):
+    """Show Prometheus metrics."""
+    try:
+        # Get metrics in Prometheus format
+        prometheus_output = metrics.to_prometheus()
+
+        # Create embed with summary
+        stats = metrics.get_stats()
+
+        embed = discord.Embed(
+            title="📊 Bot Metrics",
+            description="Prometheus-compatible metrics",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+
+        # Add counter summary
+        counters = stats['counters']
+        embed.add_field(
+            name="📈 Counters",
+            value=f"Alerts Sent: {counters.get('alerts_sent_total', 0)}\n"
+                  f"Stock Checks: {counters.get('stock_checks_total', 0)}\n"
+                  f"Products Found: {counters.get('products_discovered_total', 0)}",
+            inline=True
+        )
+
+        # Add gauge summary
+        gauges = stats['gauges']
+        embed.add_field(
+            name="📊 Gauges",
+            value=f"Products Tracked: {gauges.get('products_tracked', 0):.0f}\n"
+                  f"In Stock: {gauges.get('products_in_stock', 0):.0f}\n"
+                  f"Scheduler: {'Running' if gauges.get('scheduler_running', 0) == 1 else 'Stopped'}",
+            inline=True
+        )
+
+        # Add histogram summary
+        histograms = stats['histograms']
+        alert_hist = histograms.get('alert_send_duration_seconds', {})
+        embed.add_field(
+            name="⏱️ Alert Latency",
+            value=f"Count: {alert_hist.get('count', 0)}\n"
+                  f"Total: {alert_hist.get('sum', 0):.3f}s",
+            inline=True
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    except Exception as e:
+        logger.error(f"Error in metrics command: {e}", exc_info=True)
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 
@@ -389,6 +445,13 @@ async def shutdown(signal_obj, loop):
 
 async def main():
     """Main entry point."""
+    # Validate configuration before starting
+    try:
+        validate_config()
+    except Exception as e:
+        logger.error(f"Configuration validation failed: {e}")
+        return
+    
     if not DISCORD_TOKEN:
         logger.error("DISCORD_TOKEN not set! Please check your .env file.")
         return

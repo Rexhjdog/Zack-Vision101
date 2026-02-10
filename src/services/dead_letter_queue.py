@@ -1,4 +1,5 @@
 """Dead letter queue for failed alerts."""
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
