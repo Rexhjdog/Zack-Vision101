@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import List, Optional, Callable, Dict, Any
+from typing import List, Optional, Callable, Dict, Any, Awaitable
 from dataclasses import dataclass, field
 
 import discord
@@ -62,7 +62,7 @@ class StockScheduler:
         self,
         bot: discord.Client,
         db: Database,
-        alert_callback: Optional[Callable[[StockAlert], None]] = None
+        alert_callback: Optional[Callable[[StockAlert], Awaitable[bool]]] = None
     ):
         self.bot = bot
         self.db = db
