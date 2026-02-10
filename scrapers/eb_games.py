@@ -1,8 +1,10 @@
 from typing import List, Optional
+import logging
 from models import Product
 from scrapers.base import BaseScraper
 from bs4 import BeautifulSoup
-import re
+
+logger = logging.getLogger(__name__)
 
 class EBGamesScraper(BaseScraper):
     """Scraper for EB Games Australia"""
@@ -16,21 +18,33 @@ class EBGamesScraper(BaseScraper):
         search_url = f"https://www.ebgames.com.au/search?q={query.replace(' ', '+')}"
         
         try:
-            async with self.session.get(search_url, timeout=30) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # EB Games product grid
-                    product_items = soup.find_all('div', class_='product-item')
-                    
-                    for item in product_items:
-                        product = self._parse_product_item(item)
-                        if product and self._is_tcgp_product(product.name):
-                            products.append(product)
-        
+            response = await self._make_request(search_url)
+            if not response:
+                logger.warning(f"Failed to fetch search results from {self.retailer_name}")
+                return products
+            
+            html = await response.text()
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # EB Games product grid - these selectors need to be verified
+            product_items = soup.find_all('div', class_='product-item')
+            
+            if not product_items:
+                logger.warning(f"No products found with selector 'div.product-item' on {self.retailer_name}")
+            
+            for item in product_items:
+                try:
+                    product = self._parse_product_item(item)
+                    if product and self._is_tcgp_product(product.name):
+                        products.append(product)
+                except Exception as e:
+                    logger.error(f"Error parsing product item: {e}")
+                    continue
+            
+            logger.info(f"{self.retailer_name}: Found {len(products)} booster boxes")
+            
         except Exception as e:
-            print(f"Error searching EB Games: {e}")
+            logger.error(f"Error searching {self.retailer_name}: {e}", exc_info=True)
         
         return products
     
@@ -85,50 +99,51 @@ class EBGamesScraper(BaseScraper):
             )
         
         except Exception as e:
-            print(f"Error parsing EB Games product: {e}")
+            logger.error(f"Error parsing product item: {e}")
             return None
     
     async def get_product_details(self, url: str) -> Optional[Product]:
         """Get detailed product info from product page"""
         try:
-            async with self.session.get(url, timeout=30) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Product name
-                    name_elem = soup.find('h1', class_='product-title')
-                    name = name_elem.text.strip() if name_elem else 'Unknown'
-                    
-                    # Price
-                    price_elem = soup.find('span', class_='price') or soup.find('div', class_='product-price')
-                    price = None
-                    if price_elem:
-                        price = self._extract_price(price_elem.text)
-                    
-                    # Stock status
-                    stock_elem = soup.find('div', class_='stock-status')
-                    in_stock = False
-                    if stock_elem:
-                        in_stock = 'in stock' in stock_elem.text.lower()
-                    
-                    # Add to cart button
-                    add_cart_btn = soup.find('button', {'id': 'add-to-cart'})
-                    if add_cart_btn and not add_cart_btn.get('disabled'):
-                        in_stock = True
-                    
-                    return Product(
-                        id=self._generate_product_id(url),
-                        name=name,
-                        retailer=self.retailer_name,
-                        url=url,
-                        price=price,
-                        in_stock=in_stock,
-                        category=self._categorize_product(name),
-                        set_name=self._extract_set_name(name)
-                    )
+            response = await self._make_request(url)
+            if not response:
+                return None
+            
+            html = await response.text()
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Product name
+            name_elem = soup.find('h1', class_='product-title')
+            name = name_elem.text.strip() if name_elem else 'Unknown'
+            
+            # Price
+            price_elem = soup.find('span', class_='price') or soup.find('div', class_='product-price')
+            price = None
+            if price_elem:
+                price = self._extract_price(price_elem.text)
+            
+            # Stock status
+            stock_elem = soup.find('div', class_='stock-status')
+            in_stock = False
+            if stock_elem:
+                in_stock = 'in stock' in stock_elem.text.lower()
+            
+            # Add to cart button
+            add_cart_btn = soup.find('button', {'id': 'add-to-cart'})
+            if add_cart_btn and not add_cart_btn.get('disabled'):
+                in_stock = True
+            
+            return Product(
+                id=self._generate_product_id(url),
+                name=name,
+                retailer=self.retailer_name,
+                url=url,
+                price=price,
+                in_stock=in_stock,
+                category=self._categorize_product(name),
+                set_name=self._extract_set_name(name)
+            )
         
         except Exception as e:
-            print(f"Error getting EB Games product details: {e}")
-        
-        return None
+            logger.error(f"Error getting product details from {self.retailer_name}: {e}")
+            return None

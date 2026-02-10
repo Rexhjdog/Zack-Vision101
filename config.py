@@ -124,10 +124,25 @@ DATABASE_PATH = 'stock_alerts.db'
 ALERT_COOLDOWN = 300  # 5 minutes between alerts for same product
 MAX_ALERTS_PER_HOUR = 50  # Rate limiting
 
+# Rate Limiting Settings
+REQUEST_DELAY_MIN = 3.0  # Minimum seconds between requests to same retailer
+REQUEST_DELAY_MAX = 7.0  # Maximum seconds between requests (randomized)
+RETRY_ATTEMPTS = 3  # Number of retry attempts for failed requests
+RETRY_DELAY_BASE = 2  # Base seconds for exponential backoff
+
 # User Agents for rotation
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+]
+
+# Allowed domains for URL validation
+ALLOWED_DOMAINS = [
+    'ebgames.com.au',
+    'jbhifi.com.au',
+    'target.com.au',
+    'bigw.com.au',
+    'kmart.com.au',
 ]

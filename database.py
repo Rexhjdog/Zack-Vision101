@@ -157,15 +157,19 @@ class Database:
     
     def get_recent_alerts(self, hours: int = 24) -> List[Dict]:
         """Get alerts from the last N hours"""
+        # Calculate cutoff time in Python to avoid SQL injection
+        from datetime import timedelta
+        cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+        
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT a.*, p.name, p.retailer, p.url 
                 FROM alerts a
                 JOIN products p ON a.product_id = p.id
-                WHERE a.timestamp > datetime('now', '-{} hours')
+                WHERE a.timestamp > ?
                 ORDER BY a.timestamp DESC
-            '''.format(hours))
+            ''', (cutoff_time,))
             
             columns = [description[0] for description in cursor.description]
             rows = cursor.fetchall()
@@ -212,6 +216,31 @@ class Database:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM tracked_products WHERE id = ?', (product_id,))
             conn.commit()
+    
+    def get_last_alert_time(self, product_id: str, alert_type: str = 'in_stock') -> Optional[datetime]:
+        """Get the timestamp of the last alert for a product"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT timestamp FROM alerts 
+                WHERE product_id = ? AND alert_type = ?
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            ''', (product_id, alert_type))
+            row = cursor.fetchone()
+            if row and row[0]:
+                return datetime.fromisoformat(row[0])
+            return None
+    
+    def should_send_alert(self, product_id: str, cooldown_seconds: int = 300) -> bool:
+        """Check if enough time has passed since the last alert"""
+        last_alert = self.get_last_alert_time(product_id)
+        if not last_alert:
+            return True
+        
+        from datetime import timedelta
+        time_since_last = datetime.now() - last_alert
+        return time_since_last > timedelta(seconds=cooldown_seconds)
     
     def _row_to_product(self, row) -> Product:
         """Convert database row to Product object"""

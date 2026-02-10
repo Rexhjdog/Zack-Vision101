@@ -1,8 +1,9 @@
 import asyncio
+import logging
 from datetime import datetime
 from typing import List, Optional
 import discord
-from config import CHECK_INTERVAL, RETAILERS
+from config import CHECK_INTERVAL, RETAILERS, ALERT_COOLDOWN
 from database import Database
 from models import Product, StockAlert
 from scrapers import (
@@ -13,6 +14,8 @@ from scrapers import (
     KmartScraper
 )
 
+logger = logging.getLogger(__name__)
+
 class StockScheduler:
     """Scheduler for checking stock across all retailers"""
     
@@ -21,6 +24,7 @@ class StockScheduler:
         self.db = db
         self.running = False
         self.last_check: Optional[datetime] = None
+        self._monitoring_task: Optional[asyncio.Task] = None
         
         # Initialize scrapers
         self.scrapers = {
@@ -34,29 +38,47 @@ class StockScheduler:
     async def start(self):
         """Start the scheduler"""
         self.running = True
-        print("🚀 Starting stock monitoring scheduler...")
+        logger.info("🚀 Starting stock monitoring scheduler...")
         
-        # Start the monitoring loop
-        asyncio.create_task(self._monitoring_loop())
+        # Start the monitoring loop and store the task
+        self._monitoring_task = asyncio.create_task(self._monitoring_loop())
     
     async def stop(self):
-        """Stop the scheduler"""
+        """Stop the scheduler gracefully"""
         self.running = False
-        print("🛑 Stopping stock monitoring scheduler...")
+        logger.info("🛑 Stopping stock monitoring scheduler...")
+        
+        # Cancel the monitoring task if it's running
+        if self._monitoring_task and not self._monitoring_task.done():
+            self._monitoring_task.cancel()
+            try:
+                await self._monitoring_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Close all scraper sessions
+        for scraper in self.scrapers.values():
+            if scraper.session:
+                await scraper.session.close()
+        
+        logger.info("✅ Scheduler stopped successfully")
     
     async def _monitoring_loop(self):
         """Main monitoring loop that runs every CHECK_INTERVAL seconds"""
         while self.running:
             try:
-                print(f"\n🔍 Checking stock at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info(f"🔍 Checking stock at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 await self._check_all_retailers()
                 self.last_check = datetime.now()
                 
                 # Wait for next check
                 await asyncio.sleep(CHECK_INTERVAL)
             
+            except asyncio.CancelledError:
+                logger.info("Monitoring loop cancelled")
+                break
             except Exception as e:
-                print(f"❌ Error in monitoring loop: {e}")
+                logger.error(f"❌ Error in monitoring loop: {e}", exc_info=True)
                 await asyncio.sleep(60)  # Wait 1 minute on error
     
     async def _check_all_retailers(self):
@@ -68,10 +90,11 @@ class StockScheduler:
                 continue
             
             try:
-                print(f"  Checking {config['name']}...")
+                logger.info(f"  Checking {config['name']}...")
                 scraper = self.scrapers.get(retailer_key)
                 
                 if not scraper:
+                    logger.warning(f"No scraper found for {retailer_key}")
                     continue
                 
                 async with scraper:
@@ -87,12 +110,12 @@ class StockScheduler:
                         await self._process_product(product)
                     
                     all_new_products.extend(all_products)
-                    print(f"    Found {len(all_products)} products")
+                    logger.info(f"    Found {len(all_products)} products from {config['name']}")
             
             except Exception as e:
-                print(f"    ❌ Error checking {config['name']}: {e}")
+                logger.error(f"    ❌ Error checking {config['name']}: {e}", exc_info=True)
         
-        print(f"✅ Completed check. Total products: {len(all_new_products)}")
+        logger.info(f"✅ Completed check. Total products: {len(all_new_products)}")
     
     async def _process_product(self, product: Product):
         """Process a product and check for stock changes"""
@@ -107,7 +130,12 @@ class StockScheduler:
                 # Check for stock status change
                 if product.in_stock and not previous.in_stock:
                     # Product came back in stock!
-                    print(f"🚨 STOCK ALERT: {product.name} at {product.retailer}")
+                    logger.info(f"🚨 STOCK ALERT: {product.name} at {product.retailer}")
+                    
+                    # Check alert cooldown
+                    if not self.db.should_send_alert(product.id, ALERT_COOLDOWN):
+                        logger.debug(f"Alert cooldown active for {product.name}, skipping")
+                        return
                     
                     # Update last in stock time
                     product.last_in_stock = datetime.now()
@@ -126,7 +154,7 @@ class StockScheduler:
                 
                 # Check for price change
                 elif product.price != previous.price and product.price is not None:
-                    print(f"💰 Price change: {product.name} ${previous.price} -> ${product.price}")
+                    logger.info(f"💰 Price change: {product.name} ${previous.price} -> ${product.price}")
                     
                     alert = StockAlert(
                         product=product,
@@ -138,7 +166,7 @@ class StockScheduler:
                     self.db.save_alert(alert)
             else:
                 # New product discovered
-                print(f"📦 New product: {product.name} at {product.retailer}")
+                logger.info(f"📦 New product: {product.name} at {product.retailer}")
                 if product.in_stock:
                     product.last_in_stock = datetime.now()
             
@@ -149,7 +177,7 @@ class StockScheduler:
             self.db.save_stock_history(product)
         
         except Exception as e:
-            print(f"Error processing product {product.name}: {e}")
+            logger.error(f"Error processing product {product.name}: {e}", exc_info=True)
     
     async def _send_alert(self, alert: StockAlert):
         """Send Discord alert for stock change"""
@@ -158,11 +186,11 @@ class StockScheduler:
             from bot import send_stock_alert
             await send_stock_alert(alert.product)
         except Exception as e:
-            print(f"Error sending Discord alert: {e}")
+            logger.error(f"Error sending Discord alert: {e}", exc_info=True)
     
     async def force_check(self) -> List[Product]:
         """Force an immediate stock check"""
-        print("🔄 Forcing immediate stock check...")
+        logger.info("🔄 Forcing immediate stock check...")
         await self._check_all_retailers()
         return self.db.get_all_products()
     
