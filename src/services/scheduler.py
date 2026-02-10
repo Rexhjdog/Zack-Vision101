@@ -1,6 +1,7 @@
 """Stock monitoring scheduler."""
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import List, Optional, Callable, Dict, Any
 from dataclasses import dataclass, field
@@ -124,7 +125,6 @@ class StockScheduler:
     
     async def _check_all_retailers(self):
         """Check stock for all enabled retailers concurrently."""
-        import time
         start_time = time.time()
         
         logger.info(f"Starting stock check at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -269,7 +269,6 @@ class StockScheduler:
     
     async def _send_alert(self, alert: StockAlert):
         """Send Discord alert for stock change."""
-        import time
         if self.alert_callback:
             try:
                 start_time = time.time()

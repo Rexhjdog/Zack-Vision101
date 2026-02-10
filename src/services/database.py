@@ -1,4 +1,5 @@
 """Async database operations for Zack Vision."""
+import os
 import aiosqlite
 import sqlite3
 from datetime import datetime, timedelta
@@ -21,7 +22,6 @@ class Database:
     
     async def connect(self):
         """Initialize database connection."""
-        import os
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         
         self._connection = await aiosqlite.connect(self.db_path)

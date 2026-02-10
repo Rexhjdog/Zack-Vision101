@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import random
+import re
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -112,7 +113,6 @@ class BaseScraper(ABC):
         cleaned = price_text.replace('$', '').replace('AUD', '').replace(',', '').strip()
         
         # Extract first number found
-        import re
         match = re.search(r'\d+\.?\d*', cleaned)
         if match:
             try:

@@ -1,4 +1,5 @@
 """Advanced logging configuration with rotation."""
+import json
 import os
 import logging
 import logging.handlers
@@ -84,11 +85,6 @@ def setup_logging(
 class StructuredLogFormatter(logging.Formatter):
     """JSON structured log formatter for machine parsing."""
     
-    def __init__(self):
-        super().__init__()
-        import json
-        self.json = json
-    
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
         log_data = {
@@ -113,7 +109,7 @@ class StructuredLogFormatter(logging.Formatter):
                           'thread', 'threadName', 'processName', 'process', 'message']:
                 log_data[key] = value
         
-        return self.json.dumps(log_data)
+        return json.dumps(log_data)
 
 
 def setup_structured_logging(

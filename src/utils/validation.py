@@ -1,6 +1,7 @@
 """Configuration validation."""
 import os
 import re
+import sys
 import logging
 from typing import List, Tuple, Optional
 from urllib.parse import urlparse
@@ -149,7 +150,6 @@ class ConfigValidator:
     def _validate_environment(self):
         """Validate environment settings."""
         # Check Python version
-        import sys
         if sys.version_info < (3, 8):
             self.errors.append(f"Python {sys.version_info.major}.{sys.version_info.minor} is not supported. Minimum is 3.8")
         elif sys.version_info < (3, 10):
