@@ -2,7 +2,7 @@ import hashlib
 import random
 import asyncio
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from models import Product
 from config import (
     USER_AGENTS, REQUEST_DELAY_MIN, REQUEST_DELAY_MAX,

@@ -3,7 +3,7 @@ import hashlib
 import sys
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import urlparse
 import discord
 from discord import app_commands
@@ -44,7 +44,7 @@ def _generate_tracked_product_id(url: str) -> str:
     return f"user_{hashlib.md5(url.encode()).hexdigest()[:12]}"
 
 
-def validate_url(url: str) -> tuple[bool, str]:
+def validate_url(url: str) -> Tuple[bool, str]:
     """Validate URL format and domain against allowlist"""
     try:
         parsed = urlparse(url)
@@ -130,10 +130,15 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Failed to sync commands: {e}")
 
-    # Start the stock monitoring scheduler (with callback, no circular import)
+    # Start the stock monitoring scheduler (with callback, no circular import).
+    # Guard against duplicate schedulers: on_ready fires on every reconnect,
+    # not just the first connection.
     global scheduler
-    scheduler = StockScheduler(db=db, alert_callback=send_stock_alert)
-    await scheduler.start()
+    if scheduler is None:
+        scheduler = StockScheduler(db=db, alert_callback=send_stock_alert)
+        await scheduler.start()
+    else:
+        logger.info("Scheduler already running, skipping duplicate start")
 
     await bot.change_presence(
         activity=discord.Activity(

@@ -60,51 +60,31 @@ ONE_PIECE_SETS = [
     'The Skypiea',
 ]
 
-# Retailer URLs to Monitor
+# Retailers to Monitor
 RETAILERS = {
     'eb_games': {
         'name': 'EB Games',
         'base_url': 'https://www.ebgames.com.au',
-        'search_urls': [
-            'https://www.ebgames.com.au/search?q=pokemon+booster+box',
-            'https://www.ebgames.com.au/search?q=one+piece+booster+box',
-        ],
         'enabled': True,
     },
     'jb_hifi': {
         'name': 'JB Hi-Fi',
         'base_url': 'https://www.jbhifi.com.au',
-        'search_urls': [
-            'https://www.jbhifi.com.au/search?page=1&query=pokemon%20booster%20box',
-            'https://www.jbhifi.com.au/search?page=1&query=one%20piece%20booster%20box',
-        ],
         'enabled': True,
     },
     'target': {
         'name': 'Target Australia',
         'base_url': 'https://www.target.com.au',
-        'search_urls': [
-            'https://www.target.com.au/search?text=pokemon+booster+box',
-            'https://www.target.com.au/search?text=one+piece+booster+box',
-        ],
         'enabled': True,
     },
     'big_w': {
         'name': 'Big W',
         'base_url': 'https://www.bigw.com.au',
-        'search_urls': [
-            'https://www.bigw.com.au/search?q=pokemon+booster+box',
-            'https://www.bigw.com.au/search?q=one+piece+booster+box',
-        ],
         'enabled': True,
     },
     'kmart': {
         'name': 'Kmart Australia',
         'base_url': 'https://www.kmart.com.au',
-        'search_urls': [
-            'https://www.kmart.com.au/search/?q=pokemon+booster+box',
-            'https://www.kmart.com.au/search/?q=one+piece+booster+box',
-        ],
         'enabled': True,
     },
 }
@@ -114,7 +94,6 @@ DATABASE_PATH = 'stock_alerts.db'
 
 # Alert Settings
 ALERT_COOLDOWN = 300  # 5 minutes between alerts for same product
-MAX_ALERTS_PER_HOUR = 50
 MAX_EMBED_FIELDS = 10  # Max products shown in a single Discord embed
 STOCK_HISTORY_RETENTION_DAYS = 30  # Auto-cleanup older history
 
