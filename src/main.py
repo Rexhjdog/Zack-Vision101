@@ -18,6 +18,7 @@ from src.config import (
 from src.services.database import Database
 from src.services.scheduler import StockScheduler
 from src.models.product import StockAlert, TrackedProduct
+from src.utils.health import HealthChecker
 
 # Setup logging
 logging.basicConfig(
@@ -36,6 +37,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 db: Optional[Database] = None
 scheduler: Optional[StockScheduler] = None
+health_checker: Optional[HealthChecker] = None
 
 
 def validate_url(url: str) -> tuple[bool, str]:
@@ -57,12 +59,20 @@ def validate_url(url: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-async def send_stock_alert(alert: StockAlert):
-    """Send a stock alert to Discord."""
+async def send_stock_alert(alert: StockAlert, max_retries: int = 3) -> bool:
+    """Send a stock alert to Discord with rate limit handling.
+    
+    Args:
+        alert: The stock alert to send
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        bool: True if alert was sent successfully, False otherwise
+    """
     channel = bot.get_channel(DISCORD_CHANNEL_ID)
     if not channel:
         logger.error(f"Channel {DISCORD_CHANNEL_ID} not found")
-        return
+        return False
     
     product = alert.product
     emoji = "🎴" if product.category == 'pokemon' else "🏴‍☠️"
@@ -85,17 +95,46 @@ async def send_stock_alert(alert: StockAlert):
         embed.set_thumbnail(url=product.image_url)
     embed.set_footer(text="Act fast! Stock may sell out quickly.")
     
-    try:
-        await channel.send("@everyone 🚨 STOCK ALERT!", embed=embed)
-        logger.info(f"Alert sent for {product.name}")
-    except Exception as e:
-        logger.error(f"Failed to send alert: {e}")
+    # Attempt to send with retry logic for rate limits
+    for attempt in range(max_retries):
+        try:
+            await channel.send("@everyone 🚨 STOCK ALERT!", embed=embed)
+            logger.info(f"Alert sent for {product.name}")
+            return True
+            
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                retry_after = getattr(e, 'retry_after', 5)
+                logger.warning(f"Rate limited by Discord. Waiting {retry_after}s... (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(retry_after)
+                
+            elif e.status >= 500:  # Server error
+                logger.warning(f"Discord server error {e.status}. Retrying... (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                
+            else:
+                logger.error(f"Discord HTTP error {e.status}: {e}")
+                return False
+                
+        except discord.Forbidden:
+            logger.error(f"Bot doesn't have permission to send messages in channel {DISCORD_CHANNEL_ID}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to send alert: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+            else:
+                return False
+    
+    logger.error(f"Failed to send alert after {max_retries} attempts")
+    return False
 
 
 @bot.event
 async def on_ready():
     """Called when bot is ready."""
-    global db, scheduler
+    global db, scheduler, health_checker
     
     logger.info(f'{bot.user} has connected to Discord!')
     
@@ -106,6 +145,9 @@ async def on_ready():
     # Start scheduler
     scheduler = StockScheduler(bot, db, send_stock_alert)
     await scheduler.start()
+    
+    # Initialize health checker
+    health_checker = HealthChecker(bot, db, scheduler)
     
     # Sync commands
     try:
@@ -280,6 +322,50 @@ async def stats_cmd(interaction: discord.Interaction):
         await interaction.response.send_message(embed=embed, ephemeral=True)
     except Exception as e:
         logger.error(f"Error in stats command: {e}", exc_info=True)
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@bot.tree.command(name='health', description='Check bot health status')
+async def health_cmd(interaction: discord.Interaction):
+    """Check bot health status."""
+    try:
+        if not health_checker:
+            await interaction.response.send_message(
+                "❌ Health checker not initialized yet. Please try again in a moment.",
+                ephemeral=True
+            )
+            return
+        
+        # Run health checks
+        health_status = await health_checker.check_all()
+        
+        # Create embed
+        status_emoji = "🟢" if health_status['healthy'] else "🔴"
+        embed = discord.Embed(
+            title=f"{status_emoji} Bot Health Status",
+            description=f"Overall: {'Healthy' if health_status['healthy'] else 'Unhealthy'}",
+            color=discord.Color.green() if health_status['healthy'] else discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        
+        # Add each component status
+        for check in health_status['checks']:
+            component_emoji = "✅" if check['healthy'] else "❌"
+            value = f"{component_emoji} {check['message']}"
+            if check.get('details'):
+                details_str = '\n'.join([f"  • {k}: {v}" for k, v in check['details'].items()])
+                value += f"\n```{details_str}```"
+            
+            embed.add_field(
+                name=check['component'].title(),
+                value=value,
+                inline=False
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        logger.error(f"Error in health command: {e}", exc_info=True)
         await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SchedulerStats:
-    """Statistics for the scheduler."""
+    """Statistics for the scheduler with bounded error history."""
     total_checks: int = 0
     successful_checks: int = 0
     failed_checks: int = 0
@@ -31,6 +31,14 @@ class SchedulerStats:
     alerts_sent: int = 0
     last_check: Optional[datetime] = None
     errors: List[str] = field(default_factory=list)
+    max_errors: int = 100  # Prevent unbounded growth
+    
+    def add_error(self, error: str) -> None:
+        """Add error with automatic pruning of old errors."""
+        self.errors.append(error)
+        # Keep only last max_errors to prevent memory leak
+        if len(self.errors) > self.max_errors:
+            self.errors = self.errors[-self.max_errors:]
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -40,7 +48,8 @@ class SchedulerStats:
             'products_found': self.products_found,
             'alerts_sent': self.alerts_sent,
             'last_check': self.last_check.isoformat() if self.last_check else None,
-            'recent_errors': self.errors[-5:] if self.errors else [],
+            'recent_errors': self.errors[-10:] if self.errors else [],
+            'total_errors': len(self.errors),
         }
 
 
@@ -107,7 +116,7 @@ class StockScheduler:
                 break
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}", exc_info=True)
-                self._stats.errors.append(f"{datetime.now()}: {str(e)}")
+                self._stats.add_error(f"{datetime.now()}: {str(e)}")
                 await asyncio.sleep(60)
     
     async def _check_all_retailers(self):
@@ -135,7 +144,7 @@ class StockScheduler:
             except Exception as e:
                 logger.error(f"Error checking {retailer_key}: {e}")
                 self._stats.failed_checks += 1
-                self._stats.errors.append(f"{datetime.now()}: {retailer_key} - {str(e)}")
+                self._stats.add_error(f"{datetime.now()}: {retailer_key} - {str(e)}")
         
         self._stats.products_found = len(all_products)
         self._stats.last_check = datetime.now()
@@ -150,7 +159,7 @@ class StockScheduler:
                 logger.error(f"Error cleaning up history: {e}")
     
     async def _check_retailer(self, retailer_key: str, config) -> List[Product]:
-        """Check a single retailer."""
+        """Check a single retailer with concurrent searches."""
         logger.info(f"Checking {config.name}...")
         scraper = self.scrapers.get(retailer_key)
         if not scraper:
@@ -159,12 +168,33 @@ class StockScheduler:
         
         products = []
         async with scraper:
-            pokemon_products = await scraper.search_products('pokemon booster box')
-            onepiece_products = await scraper.search_products('one piece booster box')
-            all_products = pokemon_products + onepiece_products
+            # Run Pokemon and One Piece searches concurrently
+            pokemon_task = scraper.search_products('pokemon booster box')
+            onepiece_task = scraper.search_products('one piece booster box')
             
-            for product in all_products:
-                await self._process_product(product)
+            pokemon_products, onepiece_products = await asyncio.gather(
+                pokemon_task, 
+                onepiece_task,
+                return_exceptions=True
+            )
+            
+            # Handle exceptions
+            all_products = []
+            if isinstance(pokemon_products, Exception):
+                logger.error(f"Error searching Pokemon on {config.name}: {pokemon_products}")
+            else:
+                all_products.extend(pokemon_products)
+            
+            if isinstance(onepiece_products, Exception):
+                logger.error(f"Error searching One Piece on {config.name}: {onepiece_products}")
+            else:
+                all_products.extend(onepiece_products)
+            
+            # Process all products concurrently
+            await asyncio.gather(*[
+                self._process_product(product) 
+                for product in all_products
+            ], return_exceptions=True)
             
             products.extend(all_products)
             logger.info(f"  {config.name}: Found {len(all_products)} booster boxes")

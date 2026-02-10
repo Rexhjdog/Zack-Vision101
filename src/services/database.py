@@ -169,27 +169,53 @@ class Database:
                 return self._row_to_product(row)
             return None
     
-    async def get_all_products(self) -> List[Product]:
-        """Get all tracked products."""
-        async with self._connection.execute('SELECT * FROM products') as cursor:
-            rows = await cursor.fetchall()
-            return [self._row_to_product(row) for row in rows]
-    
-    async def get_products_by_retailer(self, retailer: str) -> List[Product]:
-        """Get products for a specific retailer."""
+    async def get_all_products(self, limit: int = 1000, offset: int = 0) -> List[Product]:
+        """Get all tracked products with pagination.
+        
+        Args:
+            limit: Maximum number of products to return (default: 1000)
+            offset: Number of products to skip (default: 0)
+        """
         async with self._connection.execute(
-            'SELECT * FROM products WHERE retailer = ?', (retailer,)
+            'SELECT * FROM products LIMIT ? OFFSET ?', (limit, offset)
         ) as cursor:
             rows = await cursor.fetchall()
             return [self._row_to_product(row) for row in rows]
     
-    async def get_in_stock_products(self) -> List[Product]:
-        """Get all products currently in stock."""
+    async def get_products_by_retailer(self, retailer: str, limit: int = 1000, offset: int = 0) -> List[Product]:
+        """Get products for a specific retailer with pagination.
+        
+        Args:
+            retailer: The retailer name to filter by
+            limit: Maximum number of products to return (default: 1000)
+            offset: Number of products to skip (default: 0)
+        """
         async with self._connection.execute(
-            'SELECT * FROM products WHERE in_stock = 1'
+            'SELECT * FROM products WHERE retailer = ? LIMIT ? OFFSET ?', 
+            (retailer, limit, offset)
         ) as cursor:
             rows = await cursor.fetchall()
             return [self._row_to_product(row) for row in rows]
+    
+    async def get_in_stock_products(self, limit: int = 1000, offset: int = 0) -> List[Product]:
+        """Get all products currently in stock with pagination.
+        
+        Args:
+            limit: Maximum number of products to return (default: 1000)
+            offset: Number of products to skip (default: 0)
+        """
+        async with self._connection.execute(
+            'SELECT * FROM products WHERE in_stock = 1 LIMIT ? OFFSET ?',
+            (limit, offset)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [self._row_to_product(row) for row in rows]
+    
+    async def get_product_count(self) -> int:
+        """Get total number of products."""
+        async with self._connection.execute('SELECT COUNT(*) FROM products') as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else 0
     
     async def save_stock_history(self, product: Product) -> None:
         """Save stock history entry."""
