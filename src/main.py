@@ -1,0 +1,325 @@
+"""Main Discord bot implementation."""
+import asyncio
+import logging
+import signal
+import sys
+from datetime import datetime
+from typing import Optional
+from urllib.parse import urlparse
+
+import discord
+from discord.ext import commands
+
+from src.config import (
+    DISCORD_TOKEN, DISCORD_CHANNEL_ID, 
+    LOG_LEVEL, LOG_FORMAT, LOG_FILE,
+    ALLOWED_DOMAINS
+)
+from src.services.database import Database
+from src.services.scheduler import StockScheduler
+from src.models.product import StockAlert, TrackedProduct
+
+# Setup logging
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format=LOG_FORMAT,
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Discord setup
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='/', intents=intents)
+db: Optional[Database] = None
+scheduler: Optional[StockScheduler] = None
+
+
+def validate_url(url: str) -> tuple[bool, str]:
+    """Validate URL format and domain."""
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return False, "Invalid URL format"
+        
+        domain = parsed.netloc.lower()
+        if domain.startswith('www.'):
+            domain = domain[4:]
+        
+        if domain not in ALLOWED_DOMAINS:
+            return False, "Domain not in allowed list"
+        
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+async def send_stock_alert(alert: StockAlert):
+    """Send a stock alert to Discord."""
+    channel = bot.get_channel(DISCORD_CHANNEL_ID)
+    if not channel:
+        logger.error(f"Channel {DISCORD_CHANNEL_ID} not found")
+        return
+    
+    product = alert.product
+    emoji = "🎴" if product.category == 'pokemon' else "🏴‍☠️"
+    color = discord.Color.red() if product.category == 'pokemon' else discord.Color.blue()
+    
+    embed = discord.Embed(
+        title=f"{emoji} IN STOCK: {product.name[:100]}",
+        url=product.url,
+        description=f"**{product.retailer}** just got stock!",
+        color=color,
+        timestamp=datetime.now()
+    )
+    
+    if product.price:
+        embed.add_field(name="💰 Price", value=f"${product.price:.2f} AUD", inline=True)
+    if product.set_name:
+        embed.add_field(name="📦 Set", value=product.set_name, inline=True)
+    embed.add_field(name="🏪 Retailer", value=product.retailer, inline=True)
+    if product.image_url:
+        embed.set_thumbnail(url=product.image_url)
+    embed.set_footer(text="Act fast! Stock may sell out quickly.")
+    
+    try:
+        await channel.send("@everyone 🚨 STOCK ALERT!", embed=embed)
+        logger.info(f"Alert sent for {product.name}")
+    except Exception as e:
+        logger.error(f"Failed to send alert: {e}")
+
+
+@bot.event
+async def on_ready():
+    """Called when bot is ready."""
+    global db, scheduler
+    
+    logger.info(f'{bot.user} has connected to Discord!')
+    
+    # Initialize database
+    db = Database()
+    await db.connect()
+    
+    # Start scheduler
+    scheduler = StockScheduler(bot, db, send_stock_alert)
+    await scheduler.start()
+    
+    # Sync commands
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        logger.error(f"Failed to sync commands: {e}")
+    
+    # Set bot status
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name='for Pokemon & One Piece booster boxes'
+        )
+    )
+
+
+@bot.tree.command(name='track', description='Add a product URL to monitor')
+async def track(interaction: discord.Interaction, url: str, name: Optional[str] = None):
+    """Add a product to track."""
+    try:
+        is_valid, error_msg = validate_url(url)
+        if not is_valid:
+            await interaction.response.send_message(f"❌ {error_msg}", ephemeral=True)
+            return
+        
+        tracked = TrackedProduct(
+            id=f"user_{hash(url) % 10000000}",
+            url=url,
+            name=name,
+            added_by=interaction.user.id,
+            alert_channel_id=interaction.channel_id
+        )
+        
+        await db.add_tracked_product(tracked)
+        
+        await interaction.response.send_message(
+            f"✅ Now tracking: {name or url}",
+            ephemeral=True
+        )
+        logger.info(f"User {interaction.user.id} started tracking: {url}")
+    
+    except Exception as e:
+        logger.error(f"Error in track command: {e}", exc_info=True)
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@bot.tree.command(name='list', description='Show all tracked products')
+async def list_cmd(interaction: discord.Interaction):
+    """List all tracked products."""
+    try:
+        products = await db.get_all_products()
+        
+        if not products:
+            await interaction.response.send_message("No products are currently being tracked.", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="📦 Tracked Booster Boxes",
+            description=f"Monitoring {len(products)} booster boxes",
+            color=discord.Color.blue()
+        )
+        
+        by_retailer = {}
+        for p in products:
+            by_retailer.setdefault(p.retailer, []).append(p)
+        
+        for retailer, prods in by_retailer.items():
+            in_stock = sum(1 for p in prods if p.in_stock)
+            embed.add_field(
+                name=retailer,
+                value=f"{len(prods)} tracked | {in_stock} in stock",
+                inline=True
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    except Exception as e:
+        logger.error(f"Error in list command: {e}", exc_info=True)
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@bot.tree.command(name='status', description='Check current stock status')
+async def status(interaction: discord.Interaction, retailer: Optional[str] = None):
+    """Check current stock status."""
+    try:
+        if retailer:
+            products = await db.get_products_by_retailer(retailer)
+        else:
+            products = await db.get_in_stock_products()
+        
+        in_stock = [p for p in products if p.in_stock] if retailer else products
+        
+        if not in_stock:
+            await interaction.response.send_message("😔 No booster boxes currently in stock", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="✅ In Stock Booster Boxes",
+            description=f"Found {len(in_stock)} boxes in stock",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        
+        for product in in_stock[:10]:
+            price_str = f"${product.price:.2f}" if product.price else "Price unknown"
+            embed.add_field(
+                name=f"{product.name[:50]}...",
+                value=f"{product.retailer} | {price_str}\n[View Product]({product.url})",
+                inline=False
+            )
+        
+        if len(in_stock) > 10:
+            embed.set_footer(text=f"And {len(in_stock) - 10} more...")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    except Exception as e:
+        logger.error(f"Error in status command: {e}", exc_info=True)
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@bot.tree.command(name='force_check', description='Force an immediate stock check')
+async def force_check(interaction: discord.Interaction):
+    """Force an immediate stock check."""
+    try:
+        await interaction.response.send_message(
+            "🔄 Starting forced stock check... This may take a few minutes.",
+            ephemeral=True
+        )
+        
+        if scheduler:
+            products = await scheduler.force_check()
+            await interaction.followup.send(
+                f"✅ Check complete! Found {len(products)} booster boxes.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                "❌ Scheduler not initialized yet. Please try again.",
+                ephemeral=True
+            )
+    except Exception as e:
+        logger.error(f"Error in force_check command: {e}", exc_info=True)
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@bot.tree.command(name='stats', description='Show bot statistics')
+async def stats_cmd(interaction: discord.Interaction):
+    """Show bot statistics."""
+    try:
+        db_stats = await db.get_stats()
+        scheduler_status = scheduler.get_status() if scheduler else {'running': False}
+        
+        embed = discord.Embed(
+            title="📊 Bot Statistics",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(name="Total Products", value=db_stats['total_products'], inline=True)
+        embed.add_field(name="In Stock", value=db_stats['in_stock'], inline=True)
+        embed.add_field(name="Alerts (24h)", value=db_stats['alerts_24h'], inline=True)
+        
+        status_emoji = "🟢" if scheduler_status['running'] else "🔴"
+        embed.add_field(
+            name="Scheduler",
+            value=f"{status_emoji} {'Running' if scheduler_status['running'] else 'Stopped'}",
+            inline=True
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    except Exception as e:
+        logger.error(f"Error in stats command: {e}", exc_info=True)
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+async def shutdown(signal_obj, loop):
+    """Cleanup tasks for graceful shutdown."""
+    logger.info(f"Received exit signal {signal_obj.name}...")
+    
+    if scheduler:
+        await scheduler.stop()
+    
+    if db:
+        await db.close()
+    
+    await bot.close()
+    
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    loop.stop()
+
+
+async def main():
+    """Main entry point."""
+    if not DISCORD_TOKEN:
+        logger.error("DISCORD_TOKEN not set! Please check your .env file.")
+        return
+    
+    if not DISCORD_CHANNEL_ID:
+        logger.error("DISCORD_CHANNEL_ID not set! Please check your .env file.")
+        return
+    
+    # Setup signal handlers
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s, loop)))
+    
+    try:
+        logger.info("Starting bot...")
+        await bot.start(DISCORD_TOKEN)
+    except Exception as e:
+        logger.error(f"Error starting bot: {e}", exc_info=True)
+    finally:
+        logger.info("Bot shutdown complete")

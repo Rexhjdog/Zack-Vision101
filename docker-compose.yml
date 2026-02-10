@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  zack-vision:
+    build: .
+    container_name: zack-vision
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
