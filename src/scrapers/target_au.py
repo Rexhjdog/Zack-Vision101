@@ -1,157 +1,98 @@
 """Target Australia scraper."""
+
+from __future__ import annotations
+
 import logging
-from typing import List, Optional
-from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
-from src.scrapers.base import BaseScraper
 from src.models.product import Product
+from src.scrapers.base import BaseScraper
 
 logger = logging.getLogger(__name__)
 
 
 class TargetScraper(BaseScraper):
-    """Scraper for Target Australia."""
-    
-    def __init__(self):
-        super().__init__('Target', 'https://www.target.com.au')
-    
-    async def search_products(self, query: str) -> List[Product]:
-        """Search Target for products."""
-        products = []
-        search_url = f"{self.base_url}/search?text={query.replace(' ', '+')}"
-        
-        soup = await self._fetch_page(search_url)
-        if not soup:
-            return products
-        
-        try:
-            product_selectors = [
-                'div.product-item',
-                'article.product',
-                '.product-list-item',
-                '.product-card',
-            ]
-            
-            product_items = []
-            for selector in product_selectors:
-                product_items = soup.select(selector)
-                if product_items:
-                    break
-            
-            for item in product_items:
-                try:
-                    product = self._parse_product_item(item)
-                    if product and self._is_booster_box(product.name):
-                        products.append(product)
-                except Exception as e:
-                    logger.error(f"Error parsing product item: {e}")
-                    continue
-            
-            logger.info(f"{self.retailer_name}: Found {len(products)} booster boxes")
-            
-        except Exception as e:
-            logger.error(f"Error searching {self.retailer_name}: {e}", exc_info=True)
-        
+    def __init__(self) -> None:
+        super().__init__("target_au", "Target", "https://www.target.com.au")
+
+    def _parse_products(self, soup: BeautifulSoup, category: str) -> list[Product]:
+        products: list[Product] = []
+
+        cards = soup.select(
+            ".product-card, .product-tile, .productCard, [data-testid='product-tile']"
+        )
+        if not cards:
+            cards = soup.select(".product, .item, .search-product")
+
+        for card in cards:
+            if not isinstance(card, Tag):
+                continue
+
+            name = self._extract_name(card)
+            if not name:
+                continue
+
+            url = self._extract_url(card)
+            if not url:
+                continue
+
+            price = self._extract_card_price(card)
+            in_stock = self._check_stock(card)
+            image_url = self._extract_image(card)
+
+            products.append(
+                self._build_product(
+                    name,
+                    url,
+                    category,
+                    price=price,
+                    in_stock=in_stock,
+                    image_url=image_url,
+                )
+            )
+
         return products
-    
-    def _parse_product_item(self, item: BeautifulSoup) -> Optional[Product]:
-        """Parse a product item from the page."""
-        try:
-            link_elem = (
-                item.select_one('a.product-link') or
-                item.select_one('a[href*="/p/"]') or
-                item.select_one('a')
-            )
-            
-            if not link_elem:
-                return None
-            
-            href = link_elem.get('href', '')
-            url = urljoin(self.base_url, href)
-            
-            name_elem = (
-                item.select_one('a.product-name') or
-                item.select_one('.product-title') or
-                link_elem
-            )
-            
-            name = name_elem.get_text(strip=True) if name_elem else 'Unknown Product'
-            if not name or name == 'Unknown Product':
-                return None
-            
-            product_id = self._generate_product_id(url)
-            
-            price_elem = (
-                item.select_one('span.price') or
-                item.select_one('.product-price')
-            )
-            
-            price = None
-            if price_elem:
-                price = self._extract_price(price_elem.get_text(strip=True))
-            
-            in_stock = False
-            stock_elem = item.select_one('.stock-availability')
-            if stock_elem:
-                stock_text = stock_elem.get_text(strip=True).lower()
-                in_stock = 'in stock' in stock_text
-            
-            cart_btn = item.select_one('button.add-to-cart')
-            if cart_btn and not cart_btn.get('disabled'):
-                in_stock = True
-            
-            img_elem = item.select_one('img')
-            image_url = img_elem.get('src') if img_elem else None
-            
-            return Product(
-                id=product_id,
-                name=name,
-                retailer=self.retailer_name,
-                url=url,
-                price=price,
-                in_stock=in_stock,
-                image_url=image_url,
-                category=self._categorize_product(name),
-                set_name=self._extract_set_name(name),
-                pack_type='box'
-            )
-        
-        except Exception as e:
-            logger.error(f"Error parsing product item: {e}")
-            return None
-    
-    async def get_product_details(self, url: str) -> Optional[Product]:
-        """Get detailed product info from product page."""
-        soup = await self._fetch_page(url)
-        if not soup:
-            return None
-        
-        try:
-            name_elem = soup.select_one('h1.product-name') or soup.select_one('h1')
-            name = name_elem.get_text(strip=True) if name_elem else 'Unknown'
-            
-            price_elem = soup.select_one('span.price')
-            price = self._extract_price(price_elem.get_text(strip=True)) if price_elem else None
-            
-            in_stock = False
-            stock_elem = soup.select_one('.stock-availability')
-            if stock_elem:
-                stock_text = stock_elem.get_text(strip=True).lower()
-                in_stock = 'in stock' in stock_text
-            
-            return Product(
-                id=self._generate_product_id(url),
-                name=name,
-                retailer=self.retailer_name,
-                url=url,
-                price=price,
-                in_stock=in_stock,
-                category=self._categorize_product(name),
-                set_name=self._extract_set_name(name)
-            )
-        
-        except Exception as e:
-            logger.error(f"Error getting product details from {self.retailer_name}: {e}")
-            return None
+
+    @staticmethod
+    def _extract_name(card: Tag) -> str:
+        for sel in (".product-title", ".productCard-title", "h3", "h2", "[data-name]"):
+            el = card.select_one(sel)
+            if el and el.get_text(strip=True):
+                return el.get_text(strip=True)
+        return ""
+
+    @staticmethod
+    def _extract_url(card: Tag) -> str:
+        link = card.select_one("a[href]")
+        if link:
+            return link["href"]
+        return ""
+
+    def _extract_card_price(self, card: Tag) -> float | None:
+        for sel in (".price", ".productCard-price", "[data-price]", ".amount"):
+            el = card.select_one(sel)
+            if el:
+                price = self._extract_price(el.get_text())
+                if price is not None:
+                    return price
+        return None
+
+    @staticmethod
+    def _check_stock(card: Tag) -> bool:
+        oos = card.select_one(".out-of-stock, .sold-out, .unavailable")
+        if oos:
+            return False
+
+        btn = card.select_one("button.add-to-cart, [data-add-to-cart]")
+        if btn:
+            return btn.get("disabled") is None
+
+        return False
+
+    @staticmethod
+    def _extract_image(card: Tag) -> str:
+        img = card.select_one("img[src], img[data-src]")
+        if img:
+            return img.get("src") or img.get("data-src") or ""
+        return ""

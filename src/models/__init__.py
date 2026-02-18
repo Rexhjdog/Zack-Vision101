@@ -1,11 +1,17 @@
-"""Models package."""
-from src.models.product import Product, StockAlert, TrackedProduct, StockHistory, AlertType, ProductCategory
+"""Data models for Zack Vision."""
+
+from src.models.product import (
+    AlertType,
+    Product,
+    StockAlert,
+    StockHistory,
+    TrackedProduct,
+)
 
 __all__ = [
-    'Product',
-    'StockAlert',
-    'TrackedProduct',
-    'StockHistory',
-    'AlertType',
-    'ProductCategory',
+    "AlertType",
+    "Product",
+    "StockAlert",
+    "StockHistory",
+    "TrackedProduct",
 ]

@@ -1,144 +1,169 @@
-"""Configuration management for Zack Vision."""
+"""Configuration loaded from environment variables."""
+
+from __future__ import annotations
+
 import os
-from dataclasses import dataclass
-from typing import List, Dict
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- Discord ---
+DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN", "")
+DISCORD_CHANNEL_ID: int = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 
-@dataclass
-class RetailerConfig:
-    """Configuration for a retailer."""
-    name: str
-    base_url: str
-    search_urls: List[str]
-    enabled: bool = True
+# --- Scheduling ---
+CHECK_INTERVAL: int = int(os.getenv("CHECK_INTERVAL", "120"))
+ALERT_COOLDOWN: int = int(os.getenv("ALERT_COOLDOWN", "300"))
 
+# --- Database ---
+DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/stock_alerts.db")
+DATABASE_WAL_MODE: bool = os.getenv("DATABASE_WAL_MODE", "true").lower() == "true"
+HISTORY_RETENTION_DAYS: int = int(os.getenv("HISTORY_RETENTION_DAYS", "30"))
 
-# Discord Configuration
-DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-DISCORD_CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID', 0))
+# --- HTTP ---
+REQUEST_DELAY_MIN: float = float(os.getenv("REQUEST_DELAY_MIN", "3"))
+REQUEST_DELAY_MAX: float = float(os.getenv("REQUEST_DELAY_MAX", "7"))
+REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))
+MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
 
-# Monitoring Configuration
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '120'))  # 2 minutes default
-ALERT_COOLDOWN = int(os.getenv('ALERT_COOLDOWN', '300'))  # 5 minutes default
-MAX_ALERTS_PER_HOUR = int(os.getenv('MAX_ALERTS_PER_HOUR', '50'))
+# --- Logging ---
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+LOG_DIR: str = os.getenv("LOG_DIR", "logs")
 
-# Database Configuration
-DATABASE_PATH = os.getenv('DATABASE_PATH', 'data/stock_alerts.db')
-DATABASE_WAL_MODE = True  # Write-Ahead Logging for better concurrency
+# --- Circuit breaker ---
+CIRCUIT_BREAKER_THRESHOLD: int = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "5"))
+CIRCUIT_BREAKER_TIMEOUT: int = int(os.getenv("CIRCUIT_BREAKER_TIMEOUT", "300"))
 
-# Request Configuration
-REQUEST_DELAY_MIN = float(os.getenv('REQUEST_DELAY_MIN', '3.0'))
-REQUEST_DELAY_MAX = float(os.getenv('REQUEST_DELAY_MAX', '7.0'))
-RETRY_ATTEMPTS = int(os.getenv('RETRY_ATTEMPTS', '3'))
-RETRY_DELAY_BASE = int(os.getenv('RETRY_DELAY_BASE', '2'))
-REQUEST_TIMEOUT = int(os.getenv('REQUEST_TIMEOUT', '30'))
-
-# Product Filtering
-BOOSTER_BOX_KEYWORDS = [
-    'booster box',
-    'booster display',
-    'display box',
-    'case',
-    'carton',
-    '36 pack',
-    '24 pack',
-    'booster case',
+# --- User-agent pool ---
+USER_AGENTS: list[str] = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
 ]
 
-EXCLUDE_KEYWORDS = [
-    'booster pack', 'blister', '3-pack', '6-pack', '10-pack',
-    'single pack', 'booster sleeve', 'sleeve', 'binder',
-    'playmat', 'deck box', 'card sleeves', 'elite trainer box',
-    'etb', 'tin', 'collection box',
+# --- Booster-box filtering ---
+BOOSTER_BOX_KEYWORDS: list[str] = [
+    "booster box",
+    "booster display",
+    "booster case",
+    "display box",
+    "sealed box",
+    "box 36",
+    "box 24",
 ]
 
-# TCG Sets
-POKEMON_SETS = [
-    'Paldean Fates', 'Temporal Forces', 'Twilight Masquerade',
-    'Shrouded Fable', 'Stellar Crown', 'Surging Sparks',
-    'Prismatic Evolutions', 'Journey Together', '151',
-    'Obsidian Flames', 'Paradox Rift',
+EXCLUSION_KEYWORDS: list[str] = [
+    "single",
+    "sleeve",
+    "binder",
+    "playmat",
+    "deck box",
+    "card protector",
+    "top loader",
+    "graded",
+    "psa",
+    "cgc",
+    "tin",
+    "blister",
+    "promo",
 ]
 
-ONE_PIECE_SETS = [
-    'Romance Dawn', 'Paramount War', 'Pillars of Strength',
-    'Kingdoms of Intrigue', 'Awakening of the New Era',
-    'Wings of the Captain', '500 Years in the Future',
-    'Two Legends', 'Emperors in the New World',
-    'Royal Blood', 'The Skypiea',
+# --- TCG sets ---
+POKEMON_SETS: list[str] = [
+    "Paldean Fates",
+    "Temporal Forces",
+    "Twilight Masquerade",
+    "Shrouded Fable",
+    "Stellar Crown",
+    "Surging Sparks",
+    "Prismatic Evolutions",
+    "Scarlet & Violet",
+    "Obsidian Flames",
+    "Paldea Evolved",
+    "151",
+    "Paradox Rift",
+    "Crown Zenith",
+    "Silver Tempest",
+    "Lost Origin",
+    "Astral Radiance",
+    "Brilliant Stars",
+    "Evolving Skies",
+    "Chilling Reign",
+    "Battle Styles",
+    "Vivid Voltage",
+    "Darkness Ablaze",
+    "Rebel Clash",
+    "Sword & Shield",
+    "Journey Together",
 ]
 
-# Retailer Configurations
-RETAILERS: Dict[str, RetailerConfig] = {
-    'eb_games': RetailerConfig(
-        name='EB Games',
-        base_url='https://www.ebgames.com.au',
-        search_urls=[
-            'https://www.ebgames.com.au/search?q=pokemon+booster+box',
-            'https://www.ebgames.com.au/search?q=one+piece+booster+box',
-        ]
-    ),
-    'jb_hifi': RetailerConfig(
-        name='JB Hi-Fi',
-        base_url='https://www.jbhifi.com.au',
-        search_urls=[
-            'https://www.jbhifi.com.au/search?page=1&query=pokemon%20booster%20box',
-            'https://www.jbhifi.com.au/search?page=1&query=one%20piece%20booster%20box',
-        ]
-    ),
-    'target': RetailerConfig(
-        name='Target Australia',
-        base_url='https://www.target.com.au',
-        search_urls=[
-            'https://www.target.com.au/search?text=pokemon+booster+box',
-            'https://www.target.com.au/search?text=one+piece+booster+box',
-        ]
-    ),
-    'big_w': RetailerConfig(
-        name='Big W',
-        base_url='https://www.bigw.com.au',
-        search_urls=[
-            'https://www.bigw.com.au/search?q=pokemon+booster+box',
-            'https://www.bigw.com.au/search?q=one+piece+booster+box',
-        ]
-    ),
-    'kmart': RetailerConfig(
-        name='Kmart Australia',
-        base_url='https://www.kmart.com.au',
-        search_urls=[
-            'https://www.kmart.com.au/search/?q=pokemon+booster+box',
-            'https://www.kmart.com.au/search/?q=one+piece+booster+box',
-        ]
-    ),
+ONE_PIECE_SETS: list[str] = [
+    "Romance Dawn",
+    "Paramount War",
+    "Pillars of Strength",
+    "Kingdoms of Intrigue",
+    "Awakening of the New Era",
+    "Wings of the Captain",
+    "500 Years in the Future",
+    "Two Legends",
+    "The Four Emperors",
+    "Royal Blood",
+    "Memorial Collection",
+]
+
+# --- Retailer definitions ---
+RETAILERS: dict[str, dict] = {
+    "eb_games": {
+        "name": "EB Games",
+        "base_url": "https://www.ebgames.com.au",
+        "search_paths": {
+            "pokemon": "/search?q=pokemon+booster+box",
+            "one_piece": "/search?q=one+piece+booster+box",
+        },
+    },
+    "jb_hifi": {
+        "name": "JB Hi-Fi",
+        "base_url": "https://www.jbhifi.com.au",
+        "search_paths": {
+            "pokemon": "/search?q=pokemon+booster+box&category=games",
+            "one_piece": "/search?q=one+piece+booster+box&category=games",
+        },
+    },
+    "target_au": {
+        "name": "Target",
+        "base_url": "https://www.target.com.au",
+        "search_paths": {
+            "pokemon": "/search?q=pokemon+booster+box",
+            "one_piece": "/search?q=one+piece+booster+box",
+        },
+    },
+    "big_w": {
+        "name": "Big W",
+        "base_url": "https://www.bigw.com.au",
+        "search_paths": {
+            "pokemon": "/search?q=pokemon+booster+box",
+            "one_piece": "/search?q=one+piece+booster+box",
+        },
+    },
+    "kmart": {
+        "name": "Kmart",
+        "base_url": "https://www.kmart.com.au",
+        "search_paths": {
+            "pokemon": "/search?q=pokemon+booster+box",
+            "one_piece": "/search?q=one+piece+booster+box",
+        },
+    },
 }
 
-# Allowed domains for URL validation
-ALLOWED_DOMAINS = [
-    'ebgames.com.au',
-    'jbhifi.com.au',
-    'target.com.au',
-    'bigw.com.au',
-    'kmart.com.au',
-    'www.ebgames.com.au',
-    'www.jbhifi.com.au',
-    'www.target.com.au',
-    'www.bigw.com.au',
-    'www.kmart.com.au',
-]
+ALLOWED_DOMAINS: set[str] = {cfg["base_url"].split("//")[1] for cfg in RETAILERS.values()}
 
-# User Agents for rotation
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-]
 
-# Logging Configuration
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-LOG_FILE = os.getenv('LOG_FILE', 'logs/bot.log')
+def data_dir() -> Path:
+    """Return (and create) the data directory."""
+    p = Path(DATABASE_PATH).parent
+    p.mkdir(parents=True, exist_ok=True)
+    return p
