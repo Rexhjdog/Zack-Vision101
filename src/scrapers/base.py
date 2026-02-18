@@ -1,253 +1,251 @@
-"""Base scraper class with circuit breaker, rate limiting, and retry logic."""
+"""Base scraper with circuit-breaker, rate-limiting and retry logic."""
+
+from __future__ import annotations
+
 import asyncio
-import hashlib
+import logging
 import random
 import re
-import logging
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Any
-from enum import Enum
+from urllib.parse import urljoin
 
 import aiohttp
 from bs4 import BeautifulSoup
 
 from src.config import (
-    USER_AGENTS, REQUEST_DELAY_MIN, REQUEST_DELAY_MAX,
-    RETRY_ATTEMPTS, RETRY_DELAY_BASE, REQUEST_TIMEOUT,
-    BOOSTER_BOX_KEYWORDS, EXCLUDE_KEYWORDS, POKEMON_SETS, ONE_PIECE_SETS
+    BOOSTER_BOX_KEYWORDS,
+    CIRCUIT_BREAKER_THRESHOLD,
+    CIRCUIT_BREAKER_TIMEOUT,
+    EXCLUSION_KEYWORDS,
+    MAX_RETRIES,
+    ONE_PIECE_SETS,
+    POKEMON_SETS,
+    REQUEST_DELAY_MAX,
+    REQUEST_DELAY_MIN,
+    REQUEST_TIMEOUT,
+    USER_AGENTS,
 )
 from src.models.product import Product
 
 logger = logging.getLogger(__name__)
 
 
-class CircuitState(Enum):
-    """Circuit breaker states."""
-    CLOSED = 'closed'      # Normal operation
-    OPEN = 'open'          # Failing, rejecting requests
-    HALF_OPEN = 'half_open'  # Testing if recovered
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
 
-
-@dataclass
 class CircuitBreaker:
-    """Circuit breaker for handling cascading failures."""
-    failure_threshold: int = 5
-    recovery_timeout: int = 60  # seconds
-    
-    def __post_init__(self):
+    """Simple three-state circuit breaker (closed / open / half-open)."""
+
+    def __init__(
+        self,
+        threshold: int = CIRCUIT_BREAKER_THRESHOLD,
+        timeout: int = CIRCUIT_BREAKER_TIMEOUT,
+    ) -> None:
+        self.threshold = threshold
+        self.timeout = timeout
         self.failures = 0
-        self.last_failure_time: Optional[datetime] = None
-        self.state = CircuitState.CLOSED
-    
-    def record_success(self):
-        """Record a successful request."""
-        self.failures = 0
-        self.state = CircuitState.CLOSED
-    
-    def record_failure(self) -> bool:
-        """Record a failed request. Returns True if circuit is now open."""
-        self.failures += 1
-        self.last_failure_time = datetime.now()
-        
-        if self.failures >= self.failure_threshold:
-            self.state = CircuitState.OPEN
-            logger.warning(f"Circuit breaker opened after {self.failures} failures")
+        self.last_failure: float = 0.0
+        self.state: str = "closed"  # closed | open | half-open
+
+    @property
+    def is_open(self) -> bool:
+        if self.state == "open":
+            if time.monotonic() - self.last_failure >= self.timeout:
+                self.state = "half-open"
+                return False
             return True
         return False
-    
-    def can_execute(self) -> bool:
-        """Check if request can be executed."""
-        if self.state == CircuitState.CLOSED:
-            return True
-        
-        if self.state == CircuitState.OPEN:
-            if self.last_failure_time:
-                elapsed = (datetime.now() - self.last_failure_time).total_seconds()
-                if elapsed >= self.recovery_timeout:
-                    self.state = CircuitState.HALF_OPEN
-                    logger.info("Circuit breaker entering half-open state")
-                    return True
-            return False
-        
-        return True  # HALF_OPEN
+
+    def record_success(self) -> None:
+        self.failures = 0
+        self.state = "closed"
+
+    def record_failure(self) -> None:
+        self.failures += 1
+        self.last_failure = time.monotonic()
+        if self.failures >= self.threshold:
+            self.state = "open"
+            logger.warning("Circuit breaker OPEN after %d failures", self.failures)
+
+
+# ---------------------------------------------------------------------------
+# Base scraper
+# ---------------------------------------------------------------------------
+
+_PRICE_RE = re.compile(r"\$\s*([\d,]+\.?\d*)")
 
 
 class BaseScraper(ABC):
-    """Base scraper with circuit breaker, rate limiting, and retry logic."""
-    
-    def __init__(self, retailer_name: str, base_url: str):
+    """Abstract retailer scraper.
+
+    Subclasses must implement ``_parse_products``.
+    """
+
+    def __init__(self, retailer_key: str, retailer_name: str, base_url: str) -> None:
+        self.retailer_key = retailer_key
         self.retailer_name = retailer_name
         self.base_url = base_url
-        self.session: Optional[aiohttp.ClientSession] = None
-        self._last_request_time: Optional[float] = None
-        self._circuit_breaker = CircuitBreaker()
-        self._headers = self._get_headers()
-    
-    def _get_headers(self) -> Dict[str, str]:
-        """Get randomized request headers."""
-        return {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9,en-AU;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Cache-Control': 'max-age=0',
-        }
-    
-    def _generate_product_id(self, url: str) -> str:
-        """Generate unique product ID from URL."""
-        return hashlib.md5(f"{self.retailer_name}:{url}".encode()).hexdigest()[:16]
-    
-    def _extract_price(self, price_text: Optional[str]) -> Optional[float]:
-        """Extract price from text."""
-        if not price_text:
+        self._cb = CircuitBreaker()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def search(
+        self,
+        category: str,
+        search_path: str,
+        *,
+        session: aiohttp.ClientSession | None = None,
+    ) -> list[Product]:
+        """Fetch a search page and return parsed products."""
+        if self._cb.is_open:
+            logger.info(
+                "[%s] Circuit breaker open – skipping %s search",
+                self.retailer_name,
+                category,
+            )
+            return []
+
+        url = urljoin(self.base_url, search_path)
+        html = await self._fetch(url, session=session)
+        if html is None:
+            return []
+
+        soup = BeautifulSoup(html, "html.parser")
+        try:
+            products = self._parse_products(soup, category)
+        except Exception:
+            logger.exception("[%s] Parse error for %s", self.retailer_name, category)
+            self._cb.record_failure()
+            return []
+
+        self._cb.record_success()
+        return [p for p in products if self._is_booster_box(p.name)]
+
+    # ------------------------------------------------------------------
+    # Abstract
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def _parse_products(self, soup: BeautifulSoup, category: str) -> list[Product]:
+        """Return a list of ``Product`` from the retailer's HTML."""
+
+    # ------------------------------------------------------------------
+    # HTTP helpers
+    # ------------------------------------------------------------------
+
+    async def _fetch(
+        self,
+        url: str,
+        *,
+        session: aiohttp.ClientSession | None = None,
+    ) -> str | None:
+        """GET *url* with retries, rate-limiting and random user-agent."""
+        own_session = session is None
+        if own_session:
+            session = aiohttp.ClientSession()
+
+        try:
+            for attempt in range(1, MAX_RETRIES + 1):
+                await asyncio.sleep(
+                    random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
+                )
+                headers = {"User-Agent": random.choice(USER_AGENTS)}
+                try:
+                    async with session.get(
+                        url,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+                        allow_redirects=True,
+                    ) as resp:
+                        if resp.status == 200:
+                            return await resp.text()
+                        logger.warning(
+                            "[%s] HTTP %d on attempt %d – %s",
+                            self.retailer_name,
+                            resp.status,
+                            attempt,
+                            url,
+                        )
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning(
+                        "[%s] Request error on attempt %d: %s",
+                        self.retailer_name,
+                        attempt,
+                        exc,
+                    )
+
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(2**attempt)
+
+            self._cb.record_failure()
             return None
-        
-        # Remove currency symbols and whitespace
-        cleaned = price_text.replace('$', '').replace('AUD', '').replace(',', '').strip()
-        
-        # Extract first number found
-        match = re.search(r'\d+\.?\d*', cleaned)
-        if match:
+        finally:
+            if own_session:
+                await session.close()
+
+    # ------------------------------------------------------------------
+    # Product helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_booster_box(name: str) -> bool:
+        lower = name.lower()
+        if any(kw in lower for kw in EXCLUSION_KEYWORDS):
+            return False
+        return any(kw in lower for kw in BOOSTER_BOX_KEYWORDS)
+
+    @staticmethod
+    def _categorize(name: str) -> str:
+        lower = name.lower()
+        if "pokemon" in lower or "pokémon" in lower:
+            return "pokemon"
+        if "one piece" in lower:
+            return "one_piece"
+        return "unknown"
+
+    @staticmethod
+    def _detect_set(name: str, category: str) -> str:
+        sets = POKEMON_SETS if category == "pokemon" else ONE_PIECE_SETS
+        lower = name.lower()
+        for s in sets:
+            if s.lower() in lower:
+                return s
+        return ""
+
+    @staticmethod
+    def _extract_price(text: str) -> float | None:
+        m = _PRICE_RE.search(text)
+        if m:
             try:
-                return float(match.group())
+                return float(m.group(1).replace(",", ""))
             except ValueError:
                 pass
         return None
-    
-    def _is_booster_box(self, name: str) -> bool:
-        """Check if product is a booster box (not pack)."""
-        name_lower = name.lower()
-        
-        # Check exclusion keywords first
-        for keyword in EXCLUDE_KEYWORDS:
-            if keyword in name_lower:
-                return False
-        
-        # Check for booster box keywords
-        for keyword in BOOSTER_BOX_KEYWORDS:
-            if keyword in name_lower:
-                return True
-        
-        return False
-    
-    def _categorize_product(self, name: str) -> str:
-        """Categorize as pokemon or one_piece."""
-        name_lower = name.lower()
-        
-        if 'pokemon' in name_lower or 'pokémon' in name_lower:
-            return 'pokemon'
-        elif 'one piece' in name_lower:
-            return 'one_piece'
-        
-        return 'unknown'
-    
-    def _extract_set_name(self, name: str) -> Optional[str]:
-        """Extract TCG set name from product name."""
-        name_lower = name.lower()
-        
-        for set_name in POKEMON_SETS:
-            if set_name.lower() in name_lower:
-                return set_name
-        
-        for set_name in ONE_PIECE_SETS:
-            if set_name.lower() in name_lower:
-                return set_name
-        
-        return None
-    
-    async def _apply_rate_limit(self):
-        """Apply rate limiting delay between requests."""
-        if self._last_request_time is not None:
-            elapsed = asyncio.get_event_loop().time() - self._last_request_time
-            delay = random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX)
-            if elapsed < delay:
-                await asyncio.sleep(delay - elapsed)
-        self._last_request_time = asyncio.get_event_loop().time()
-    
-    async def _make_request(self, url: str, method: str = 'GET', **kwargs) -> Optional[aiohttp.ClientResponse]:
-        """Make HTTP request with circuit breaker, rate limiting, and retry logic."""
-        # Check circuit breaker
-        if not self._circuit_breaker.can_execute():
-            logger.warning(f"{self.retailer_name}: Circuit breaker is OPEN, skipping request")
-            return None
-        
-        await self._apply_rate_limit()
-        
-        for attempt in range(RETRY_ATTEMPTS):
-            try:
-                logger.debug(f"{self.retailer_name}: {method} {url} (attempt {attempt + 1}/{RETRY_ATTEMPTS})")
-                
-                if method.upper() == 'GET':
-                    async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT), **kwargs) as response:
-                        if response.status == 200:
-                            self._circuit_breaker.record_success()
-                            return response
-                        elif response.status == 429:  # Rate limited
-                            retry_after = int(response.headers.get('Retry-After', RETRY_DELAY_BASE * (2 ** attempt)))
-                            logger.warning(f"{self.retailer_name}: Rate limited (429), waiting {retry_after}s")
-                            await asyncio.sleep(retry_after)
-                        elif response.status >= 500:  # Server error
-                            logger.warning(f"{self.retailer_name}: Server error {response.status}")
-                            if attempt < RETRY_ATTEMPTS - 1:
-                                backoff = RETRY_DELAY_BASE * (2 ** attempt) + random.uniform(0, 1)
-                                await asyncio.sleep(backoff)
-                        else:
-                            logger.warning(f"{self.retailer_name}: HTTP {response.status} for {url}")
-                            
-            except asyncio.TimeoutError:
-                logger.warning(f"{self.retailer_name}: Timeout on attempt {attempt + 1}")
-            except aiohttp.ClientError as e:
-                logger.warning(f"{self.retailer_name}: Client error on attempt {attempt + 1}: {e}")
-            except Exception as e:
-                logger.error(f"{self.retailer_name}: Unexpected error on attempt {attempt + 1}: {e}")
-            
-            if attempt < RETRY_ATTEMPTS - 1:
-                backoff = RETRY_DELAY_BASE * (2 ** attempt) + random.uniform(0, 1)
-                logger.info(f"{self.retailer_name}: Retrying in {backoff:.1f}s...")
-                await asyncio.sleep(backoff)
-        
-        # All attempts failed
-        self._circuit_breaker.record_failure()
-        logger.error(f"{self.retailer_name}: All {RETRY_ATTEMPTS} attempts failed for {url}")
-        return None
-    
-    async def _fetch_page(self, url: str) -> Optional[BeautifulSoup]:
-        """Fetch and parse a page."""
-        response = await self._make_request(url)
-        if not response:
-            return None
-        
-        try:
-            html = await response.text()
-            return BeautifulSoup(html, 'html.parser')
-        except Exception as e:
-            logger.error(f"{self.retailer_name}: Failed to parse HTML: {e}")
-            return None
-    
-    @abstractmethod
-    async def search_products(self, query: str) -> List[Product]:
-        """Search for products. Must be implemented by subclasses."""
-        pass
-    
-    @abstractmethod
-    async def get_product_details(self, url: str) -> Optional[Product]:
-        """Get detailed product info. Must be implemented by subclasses."""
-        pass
-    
-    async def __aenter__(self):
-        """Async context manager entry."""
-        self.session = aiohttp.ClientSession(headers=self._headers)
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        if self.session:
-            await self.session.close()
-            self.session = None
+
+    def _build_product(
+        self,
+        name: str,
+        url: str,
+        category: str,
+        *,
+        price: float | None = None,
+        in_stock: bool = False,
+        image_url: str = "",
+    ) -> Product:
+        if not url.startswith("http"):
+            url = urljoin(self.base_url, url)
+        detected_cat = self._categorize(name) if category == "unknown" else category
+        return Product(
+            name=name.strip(),
+            url=url,
+            retailer=self.retailer_name,
+            in_stock=in_stock,
+            price=price,
+            category=detected_cat,
+            set_name=self._detect_set(name, detected_cat),
+            image_url=image_url,
+        )
